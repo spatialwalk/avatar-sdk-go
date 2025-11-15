@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/gorilla/websocket"
 	message "github.com/spatialwalk/avatar-sdk-go/proto/generated"
@@ -23,9 +24,12 @@ const (
 
 // AvatarSession represents an active avatar session configured via SessionOptions.
 type AvatarSession struct {
-	config       *SessionConfig
-	sessionToken string
-	conn         *websocket.Conn
+	config           *SessionConfig
+	sessionToken     string
+	conn             *websocket.Conn
+	sendDuration     time.Duration
+	expectedSegments int
+	receivedSegments int
 }
 
 // NewAvatarSession creates a new AvatarSession using the provided SessionOptions.
@@ -195,6 +199,8 @@ func (s *AvatarSession) SendAudio(audio []byte, end bool) (string, error) {
 		return "", errors.New("send audio: websocket connection is not established")
 	}
 
+	s.sendDuration += time.Duration(len(audio)) * time.Second / time.Duration(s.config.SampleRate*s.config.SampleWidth)
+
 	reqId, err := GenerateLogID()
 	if err != nil {
 		return "", fmt.Errorf("send audio: generate request id: %w", err)
@@ -218,6 +224,15 @@ func (s *AvatarSession) SendAudio(audio []byte, end bool) (string, error) {
 	if err := s.conn.WriteMessage(websocket.BinaryMessage, data); err != nil {
 		return "", fmt.Errorf("send audio: write message: %w", err)
 	}
+
+	if end {
+		if s.sendDuration.Seconds() < 2 {
+			s.expectedSegments = 1
+		} else {
+			s.expectedSegments = int((s.sendDuration.Seconds()-2)/4) + 2
+		}
+	}
+
 	return reqId, nil
 }
 
@@ -318,7 +333,15 @@ func (s *AvatarSession) readLoop(ctx context.Context) {
 		case message.MessageType_MESSAGE_SERVER_RESPONSE_ANIMATION:
 			if cfg != nil && cfg.TransportFrames != nil {
 				frame := append([]byte(nil), payload...)
-				go cfg.TransportFrames(frame)
+				s.receivedSegments++
+				last := false
+				if s.receivedSegments == s.expectedSegments {
+					last = true
+					s.receivedSegments = 0
+					s.expectedSegments = 0
+					s.sendDuration = 0
+				}
+				go cfg.TransportFrames(frame, last)
 			}
 		case message.MessageType_MESSAGE_ERROR:
 			if cfg != nil && cfg.OnError != nil {

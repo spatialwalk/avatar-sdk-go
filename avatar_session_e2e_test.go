@@ -104,8 +104,8 @@ func TestAvatarSessionEndToEnd(t *testing.T) {
 		WithIngressEndpointURL(ingressEndpoint),
 		WithAvatarID(avatarID),
 		WithExpireAt(time.Now().Add(5*time.Second).UTC()),
-		WithTransportFrames(func(data []byte) {
-			t.Logf("received transport frame of %d bytes", len(data))
+		WithTransportFrames(func(data []byte, end bool) {
+			t.Logf("received transport frame of %d bytes, end: %v", len(data), end)
 		}),
 		WithOnError(func(err error) {
 			t.Logf("received error: %v", err)

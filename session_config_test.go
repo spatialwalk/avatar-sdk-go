@@ -14,10 +14,10 @@ func TestSessionOptionOverrides(t *testing.T) {
 	var onErrorCalled bool
 	var onCloseCalled bool
 
-	frameHandler := func(data []byte) {
+	frameHandler := func(data []byte, end bool) {
 		framesCalled = true
 		if string(data) != "payload" {
-			t.Fatalf("unexpected frame payload: %s", string(data))
+			t.Fatalf("unexpected frame payload: %s, end: %v", string(data), end)
 		}
 	}
 
@@ -35,7 +35,6 @@ func TestSessionOptionOverrides(t *testing.T) {
 		WithAPIKey("api-key"),
 		WithAppID("app-id"),
 		WithExpireAt(expireAt),
-		WithSampleRate(48000),
 		WithTransportFrames(frameHandler),
 		WithOnError(errorHandler),
 		WithOnClose(closeHandler),
@@ -59,9 +58,6 @@ func TestSessionOptionOverrides(t *testing.T) {
 	if !cfg.ExpireAt.Equal(expireAt) {
 		t.Fatalf("expected ExpireAt to be %v, got %v", expireAt, cfg.ExpireAt)
 	}
-	if cfg.SampleRate != 48000 {
-		t.Fatalf("expected SampleRate to be 48000, got %f", cfg.SampleRate)
-	}
 	if cfg.ConsoleEndpointURL != "https://console.test" {
 		t.Fatalf("expected ConsoleEndpointURL to be set, got %q", cfg.ConsoleEndpointURL)
 	}
@@ -72,7 +68,7 @@ func TestSessionOptionOverrides(t *testing.T) {
 	if cfg.TransportFrames == nil {
 		t.Fatal("TransportFrames handler should not be nil")
 	}
-	cfg.TransportFrames([]byte("payload"))
+	cfg.TransportFrames([]byte("payload"), false)
 	if !framesCalled {
 		t.Fatal("TransportFrames handler was not invoked")
 	}
@@ -108,7 +104,7 @@ func TestSessionOptionDefaults(t *testing.T) {
 	}
 
 	// Ensure default handlers do not panic.
-	cfg.TransportFrames([]byte("noop"))
+	cfg.TransportFrames([]byte("noop"), false)
 	cfg.OnError(nil)
 	cfg.OnClose()
 }
@@ -120,7 +116,7 @@ func TestNilHandlersUseNoopDefaults(t *testing.T) {
 	if cfg.TransportFrames == nil {
 		t.Fatal("TransportFrames should default to a no-op handler")
 	}
-	safeInvoke(t, func() { cfg.TransportFrames(nil) })
+	safeInvoke(t, func() { cfg.TransportFrames(nil, false) })
 
 	WithOnError(nil)(cfg)
 	if cfg.OnError == nil {

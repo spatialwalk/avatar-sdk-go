@@ -8,8 +8,9 @@ type SessionConfig struct {
 	APIKey             string
 	AppID              string
 	ExpireAt           time.Time
-	SampleRate         float64
-	TransportFrames    func([]byte)
+	SampleRate         int64
+	SampleWidth        int64
+	TransportFrames    func([]byte, bool)
 	OnError            func(error)
 	OnClose            func()
 	ConsoleEndpointURL string
@@ -21,9 +22,11 @@ type SessionOption func(*SessionConfig)
 
 func defaultSessionConfig() *SessionConfig {
 	return &SessionConfig{
-		TransportFrames: func([]byte) {},
+		TransportFrames: func([]byte, bool) {},
 		OnError:         func(error) {},
 		OnClose:         func() {},
+		SampleRate:      16000,
+		SampleWidth:     2,
 	}
 }
 
@@ -55,20 +58,13 @@ func WithExpireAt(expireAt time.Time) SessionOption {
 	}
 }
 
-// WithSampleRate sets the audio sample rate used for the session.
-func WithSampleRate(sampleRate float64) SessionOption {
-	return func(cfg *SessionConfig) {
-		cfg.SampleRate = sampleRate
-	}
-}
-
 // WithTransportFrames registers a handler invoked when transport frames are emitted.
-func WithTransportFrames(handler func([]byte)) SessionOption {
+func WithTransportFrames(handler func([]byte, bool)) SessionOption {
 	return func(cfg *SessionConfig) {
 		if handler != nil {
 			cfg.TransportFrames = handler
 		} else {
-			cfg.TransportFrames = func([]byte) {}
+			cfg.TransportFrames = func([]byte, bool) {}
 		}
 	}
 }
