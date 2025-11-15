@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/gorilla/websocket"
 )
 
 func TestAvatarSessionInitSuccess(t *testing.T) {
@@ -114,5 +116,97 @@ func TestAvatarSessionInitMissingConfig(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "missing API key") {
 		t.Fatalf("expected missing API key error, got %v", err)
+	}
+}
+
+func TestAvatarSessionStartSuccess(t *testing.T) {
+	upgrader := websocket.Upgrader{
+		CheckOrigin: func(r *http.Request) bool { return true },
+	}
+
+	var receivedAvatarID string
+	var receivedSessionKey string
+	var serverConn *websocket.Conn
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != ingressWebSocketPath {
+			t.Fatalf("expected websocket path %s, got %s", ingressWebSocketPath, r.URL.Path)
+		}
+		receivedAvatarID = r.URL.Query().Get("id")
+		receivedSessionKey = r.Header.Get("X-Session-Key")
+
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Fatalf("failed to upgrade connection: %v", err)
+		}
+		serverConn = conn
+	}))
+	defer server.Close()
+	defer func() {
+		if serverConn != nil {
+			_ = serverConn.Close()
+		}
+	}()
+
+	session := NewAvatarSession(
+		WithAvatarID("avatar-123"),
+		WithIngressEndpointURL(strings.Replace(server.URL, "http", "ws", 1)),
+	)
+
+	session.sessionToken = "session-token-123"
+
+	_, err := session.Start(context.Background())
+	if err != nil {
+		t.Fatalf("Start returned error: %v", err)
+	}
+
+	if receivedAvatarID != "avatar-123" {
+		t.Fatalf("expected avatar id to be sent, got %q", receivedAvatarID)
+	}
+	if receivedSessionKey != "session-token-123" {
+		t.Fatalf("expected X-Session-Key header, got %q", receivedSessionKey)
+	}
+	if session.conn == nil {
+		t.Fatal("expected websocket connection to be established")
+	}
+
+	if err := session.Close(); err != nil {
+		t.Fatalf("Close returned error: %v", err)
+	}
+	if session.conn != nil {
+		t.Fatal("expected connection to be cleared after Close")
+	}
+}
+
+func TestAvatarSessionStartMissingToken(t *testing.T) {
+	session := NewAvatarSession(
+		WithAvatarID("avatar-123"),
+		WithIngressEndpointURL("wss://example.com"),
+	)
+
+	_, err := session.Start(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "session not initialized") {
+		t.Fatalf("expected session not initialized error, got %v", err)
+	}
+}
+
+func TestAvatarSessionStartDialFailure(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+	}))
+	defer server.Close()
+
+	session := NewAvatarSession(
+		WithAvatarID("avatar-123"),
+		WithIngressEndpointURL(strings.Replace(server.URL, "http", "ws", 1)),
+	)
+	session.sessionToken = "session-token-123"
+
+	_, err := session.Start(context.Background())
+	if err == nil {
+		t.Fatal("expected Start to return error on dial failure")
+	}
+	if !strings.Contains(err.Error(), "unauthorized") {
+		t.Fatalf("expected error to include server response, got %v", err)
 	}
 }

@@ -8,15 +8,22 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
+
+	"github.com/gorilla/websocket"
 )
 
-const sessionTokenPath = "/session-tokens"
+const (
+	sessionTokenPath     = "/session-tokens"
+	ingressWebSocketPath = "/websocket"
+)
 
 // AvatarSession represents an active avatar session configured via SessionOptions.
 type AvatarSession struct {
 	config       *SessionConfig
 	sessionToken string
+	conn         *websocket.Conn
 }
 
 // NewAvatarSession creates a new AvatarSession using the provided SessionOptions.
@@ -107,6 +114,67 @@ func (s *AvatarSession) Init(ctx context.Context) error {
 }
 
 func (s *AvatarSession) Start(ctx context.Context) (string, error) {
+	if s == nil {
+		return "", errors.New("start avatar session: session is nil")
+	}
+	if s.config == nil {
+		return "", errors.New("start avatar session: session config is nil")
+	}
+	if s.conn != nil {
+		return "", errors.New("start avatar session: session already started")
+	}
+	if s.sessionToken == "" {
+		return "", errors.New("start avatar session: session not initialized")
+	}
+
+	cfg := s.config
+	if cfg.IngressEndpointURL == "" {
+		return "", errors.New("start avatar session: missing ingress endpoint URL")
+	}
+	if cfg.AvatarID == "" {
+		return "", errors.New("start avatar session: missing avatar ID")
+	}
+
+	endpoint := strings.TrimRight(cfg.IngressEndpointURL, "/") + ingressWebSocketPath
+
+	u, err := url.Parse(endpoint)
+	if err != nil {
+		return "", fmt.Errorf("start avatar session: parse ingress endpoint: %w", err)
+	}
+
+	switch strings.ToLower(u.Scheme) {
+	case "http":
+		u.Scheme = "ws"
+	case "https":
+		u.Scheme = "wss"
+	case "ws", "wss":
+		// already websocket scheme
+	case "":
+		return "", errors.New("start avatar session: ingress endpoint scheme missing")
+	default:
+		return "", fmt.Errorf("start avatar session: unsupported scheme %q", u.Scheme)
+	}
+
+	q := u.Query()
+	q.Set("id", cfg.AvatarID)
+	u.RawQuery = q.Encode()
+
+	headers := http.Header{}
+	headers.Set("X-Session-Key", s.sessionToken)
+
+	conn, resp, err := websocket.DefaultDialer.DialContext(ctx, u.String(), headers)
+	if err != nil {
+		if resp != nil && resp.Body != nil {
+			defer resp.Body.Close() // nolint:errcheck
+			if body, readErr := io.ReadAll(io.LimitReader(resp.Body, 4096)); readErr == nil && len(body) > 0 {
+				return "", fmt.Errorf("start avatar session: dial websocket failed with code %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+			}
+		}
+		return "", fmt.Errorf("start avatar session: dial websocket: %w", err)
+	}
+
+	s.conn = conn
+	// TODO: generate connection id
 	return "", nil
 }
 
@@ -115,6 +183,14 @@ func (s *AvatarSession) SendAudio(audio []byte, end bool) (string, error) {
 }
 
 func (s *AvatarSession) Close() error {
+	if s == nil {
+		return nil
+	}
+	if s.conn != nil {
+		_ = s.conn.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
+		_ = s.conn.Close()
+		s.conn = nil
+	}
 	return nil
 }
 
