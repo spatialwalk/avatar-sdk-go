@@ -10,8 +10,6 @@ type SessionConfig struct {
 	ExpireAt           time.Time
 	SampleRate         float64
 	TransportFrames    func([]byte)
-	HeartbeatInterval  time.Duration
-	HeartbeatTimeout   time.Duration
 	OnError            func(error)
 	OnClose            func()
 	ConsoleEndpointURL string
@@ -72,20 +70,6 @@ func WithTransportFrames(handler func([]byte)) SessionOption {
 		} else {
 			cfg.TransportFrames = func([]byte) {}
 		}
-	}
-}
-
-// WithHeartbeatInterval configures the interval between heartbeat messages.
-func WithHeartbeatInterval(interval time.Duration) SessionOption {
-	return func(cfg *SessionConfig) {
-		cfg.HeartbeatInterval = interval
-	}
-}
-
-// WithHeartbeatTimeout configures the timeout for heartbeat responses.
-func WithHeartbeatTimeout(timeout time.Duration) SessionOption {
-	return func(cfg *SessionConfig) {
-		cfg.HeartbeatTimeout = timeout
 	}
 }
 

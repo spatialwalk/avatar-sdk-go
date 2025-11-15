@@ -12,6 +12,8 @@ import (
 	"strings"
 
 	"github.com/gorilla/websocket"
+	message "github.com/spatialwalk/avatar-sdk-go/proto/generated"
+	"google.golang.org/protobuf/proto"
 )
 
 const (
@@ -162,6 +164,13 @@ func (s *AvatarSession) Start(ctx context.Context) (string, error) {
 	headers := http.Header{}
 	headers.Set("X-Session-Key", s.sessionToken)
 
+	connectionId, err := GenerateLogID()
+	if err != nil {
+		return "", fmt.Errorf("start avatar session: generate connection id: %w", err)
+	}
+
+	headers.Set("X-Connection-Id", connectionId)
+
 	conn, resp, err := websocket.DefaultDialer.DialContext(ctx, u.String(), headers)
 	if err != nil {
 		if resp != nil && resp.Body != nil {
@@ -174,12 +183,42 @@ func (s *AvatarSession) Start(ctx context.Context) (string, error) {
 	}
 
 	s.conn = conn
-	// TODO: generate connection id
-	return "", nil
+
+	go s.readLoop(ctx)
+
+	return connectionId, nil
 }
 
+// Currently, we only support 16kHz mono 16-bit PCM audio.
 func (s *AvatarSession) SendAudio(audio []byte, end bool) (string, error) {
-	return "", nil
+	if s.conn == nil {
+		return "", errors.New("send audio: websocket connection is not established")
+	}
+
+	reqId, err := GenerateLogID()
+	if err != nil {
+		return "", fmt.Errorf("send audio: generate request id: %w", err)
+	}
+	msg := &message.Message{
+		Type: message.MessageType_MESSAGE_CLIENT_AUDIO_INPUT,
+		Data: &message.Message_ClientAudioInput{
+			ClientAudioInput: &message.ClientAudioInputData{
+				ReqId: reqId,
+				Audio: audio,
+				End:   end,
+			},
+		},
+	}
+
+	data, err := proto.Marshal(msg)
+	if err != nil {
+		return "", fmt.Errorf("send audio: marshal message: %w", err)
+	}
+
+	if err := s.conn.WriteMessage(websocket.BinaryMessage, data); err != nil {
+		return "", fmt.Errorf("send audio: write message: %w", err)
+	}
+	return reqId, nil
 }
 
 func (s *AvatarSession) Close() error {
@@ -190,6 +229,9 @@ func (s *AvatarSession) Close() error {
 		_ = s.conn.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
 		_ = s.conn.Close()
 		s.conn = nil
+	}
+	if s.config.OnClose != nil {
+		go s.config.OnClose()
 	}
 	return nil
 }
@@ -217,4 +259,77 @@ func formatSessionTokenError(status int, resp *sessionTokenResponse) string {
 	}
 	err := resp.Errors[0]
 	return fmt.Sprintf("Error %d (%s): %s - %s", err.Status, err.Code, err.Title, err.Detail)
+}
+
+func (s *AvatarSession) readLoop(ctx context.Context) {
+	if s == nil {
+		return
+	}
+
+	conn := s.conn
+	if conn == nil {
+		return
+	}
+
+	cfg := s.config
+
+	for {
+		if ctx != nil {
+			select {
+			case <-ctx.Done():
+				return
+			default:
+			}
+		}
+
+		messageType, payload, err := conn.ReadMessage()
+		if err != nil {
+			if ctx != nil && ctx.Err() != nil {
+				return
+			}
+
+			if websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
+				return
+			}
+
+			if cfg != nil {
+				asyncErr := fmt.Errorf("avatar session read loop: read message: %w", err)
+				go cfg.OnError(asyncErr)
+			}
+
+			_ = s.Close()
+			return
+		}
+
+		if messageType != websocket.BinaryMessage {
+			continue
+		}
+
+		var envelope message.Message
+		if err := proto.Unmarshal(payload, &envelope); err != nil {
+			if cfg != nil {
+				asyncErr := fmt.Errorf("avatar session read loop: decode message: %w", err)
+				go cfg.OnError(asyncErr)
+			}
+			continue
+		}
+
+		switch envelope.GetType() {
+		case message.MessageType_MESSAGE_SERVER_RESPONSE_ANIMATION:
+			if cfg != nil && cfg.TransportFrames != nil {
+				frame := append([]byte(nil), payload...)
+				go cfg.TransportFrames(frame)
+			}
+		case message.MessageType_MESSAGE_ERROR:
+			if cfg != nil && cfg.OnError != nil {
+				errInfo := envelope.GetError()
+				if errInfo == nil {
+					go cfg.OnError(errors.New("avatar session read loop: error message missing payload"))
+					continue
+				}
+				report := fmt.Errorf("avatar session error (req_id=%s, code=%d): %s", errInfo.GetReqId(), errInfo.GetCode(), errInfo.GetReason())
+				go cfg.OnError(report)
+			}
+		}
+	}
 }

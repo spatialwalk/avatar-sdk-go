@@ -37,8 +37,6 @@ func TestSessionOptionOverrides(t *testing.T) {
 		WithExpireAt(expireAt),
 		WithSampleRate(48000),
 		WithTransportFrames(frameHandler),
-		WithHeartbeatInterval(2 * time.Second),
-		WithHeartbeatTimeout(3 * time.Second),
 		WithOnError(errorHandler),
 		WithOnClose(closeHandler),
 		WithConsoleEndpointURL("https://console.test"),
@@ -63,12 +61,6 @@ func TestSessionOptionOverrides(t *testing.T) {
 	}
 	if cfg.SampleRate != 48000 {
 		t.Fatalf("expected SampleRate to be 48000, got %f", cfg.SampleRate)
-	}
-	if cfg.HeartbeatInterval != 2*time.Second {
-		t.Fatalf("expected HeartbeatInterval to be 2s, got %v", cfg.HeartbeatInterval)
-	}
-	if cfg.HeartbeatTimeout != 3*time.Second {
-		t.Fatalf("expected HeartbeatTimeout to be 3s, got %v", cfg.HeartbeatTimeout)
 	}
 	if cfg.ConsoleEndpointURL != "https://console.test" {
 		t.Fatalf("expected ConsoleEndpointURL to be set, got %q", cfg.ConsoleEndpointURL)

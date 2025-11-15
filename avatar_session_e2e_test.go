@@ -3,6 +3,8 @@ package avatarsdkgo
 import (
 	"context"
 	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -11,15 +13,8 @@ import (
 // It requires the environment variables AVATAR_API_KEY and AVATAR_CONSOLE_ENDPOINT to be set.
 // The endpoint should include the /v1/console prefix, e.g. https://api.example.com/v1/console.
 func TestAvatarSessionInitEndToEnd(t *testing.T) {
-	apiKey, ok := os.LookupEnv("AVATAR_API_KEY")
-	if !ok || apiKey == "" {
-		t.Skip("AVATAR_API_KEY not set; skipping end-to-end test")
-	}
-
-	consoleEndpoint, ok := os.LookupEnv("AVATAR_CONSOLE_ENDPOINT")
-	if !ok || consoleEndpoint == "" {
-		t.Skip("AVATAR_CONSOLE_ENDPOINT not set; skipping end-to-end test")
-	}
+	apiKey := envOrSkip(t, "AVATAR_API_KEY")
+	consoleEndpoint := envOrSkip(t, "AVATAR_CONSOLE_ENDPOINT")
 
 	expireAt := time.Now().Add(5 * time.Minute).UTC()
 
@@ -38,8 +33,6 @@ func TestAvatarSessionInitEndToEnd(t *testing.T) {
 
 	if session.sessionToken == "" {
 		t.Fatal("expected session token to be populated")
-	} else {
-		t.Logf("obtained session token: %s", session.sessionToken)
 	}
 }
 
@@ -48,25 +41,10 @@ func TestAvatarSessionInitEndToEnd(t *testing.T) {
 // and AVATAR_SESSION_AVATAR_ID to be set. The ingress endpoint should be the base URL that hosts the
 // websocket endpoint (without the /websocket suffix).
 func TestAvatarSessionStartEndToEnd(t *testing.T) {
-	apiKey, ok := os.LookupEnv("AVATAR_API_KEY")
-	if !ok || apiKey == "" {
-		t.Skip("AVATAR_API_KEY not set; skipping end-to-end test")
-	}
-
-	consoleEndpoint, ok := os.LookupEnv("AVATAR_CONSOLE_ENDPOINT")
-	if !ok || consoleEndpoint == "" {
-		t.Skip("AVATAR_CONSOLE_ENDPOINT not set; skipping end-to-end test")
-	}
-
-	ingressEndpoint, ok := os.LookupEnv("AVATAR_INGRESS_ENDPOINT")
-	if !ok || ingressEndpoint == "" {
-		t.Skip("AVATAR_INGRESS_ENDPOINT not set; skipping end-to-end test")
-	}
-
-	avatarID, ok := os.LookupEnv("AVATAR_SESSION_AVATAR_ID")
-	if !ok || avatarID == "" {
-		t.Skip("AVATAR_SESSION_AVATAR_ID not set; skipping end-to-end test")
-	}
+	apiKey := envOrSkip(t, "AVATAR_API_KEY")
+	consoleEndpoint := envOrSkip(t, "AVATAR_CONSOLE_ENDPOINT")
+	ingressEndpoint := envOrSkip(t, "AVATAR_INGRESS_ENDPOINT")
+	avatarID := envOrSkip(t, "AVATAR_SESSION_AVATAR_ID")
 
 	expireAt := time.Now().Add(5 * time.Minute).UTC()
 
@@ -78,7 +56,7 @@ func TestAvatarSessionStartEndToEnd(t *testing.T) {
 		WithExpireAt(expireAt),
 	)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
 	if err := session.Init(ctx); err != nil {
@@ -89,20 +67,92 @@ func TestAvatarSessionStartEndToEnd(t *testing.T) {
 		t.Fatal("expected session token to be populated after Init")
 	}
 
-	if _, err := session.Start(ctx); err != nil {
+	connectionID, err := session.Start(ctx)
+	if err != nil {
 		t.Fatalf("Start failed: %v", err)
 	}
+	if connectionID == "" {
+		t.Fatal("expected non-empty connection id")
+	}
+
 	defer func() {
 		if err := session.Close(); err != nil {
 			t.Logf("Close returned error: %v", err)
-		} else {
-			t.Log("session closed successfully")
 		}
 	}()
 
-	if session.conn == nil {
+	if s := session.conn; s == nil {
 		t.Fatal("expected websocket connection to be established")
-	} else {
-		t.Log("websocket connection established successfully")
 	}
+}
+
+func TestAvatarSessionEndToEnd(t *testing.T) {
+	apiKey := envOrSkip(t, "AVATAR_API_KEY")
+	consoleEndpoint := envOrSkip(t, "AVATAR_CONSOLE_ENDPOINT")
+	ingressEndpoint := envOrSkip(t, "AVATAR_INGRESS_ENDPOINT")
+	avatarID := envOrSkip(t, "AVATAR_SESSION_AVATAR_ID")
+
+	audioPath := filepath.Join("audio.pcm")
+	audioData, err := os.ReadFile(audioPath)
+	if err != nil {
+		t.Fatalf("read audio fixture %q: %v", audioPath, err)
+	}
+
+	session := NewAvatarSession(
+		WithAPIKey(apiKey),
+		WithConsoleEndpointURL(consoleEndpoint),
+		WithIngressEndpointURL(ingressEndpoint),
+		WithAvatarID(avatarID),
+		WithExpireAt(time.Now().Add(5*time.Second).UTC()),
+		WithTransportFrames(func(data []byte) {
+			t.Logf("received transport frame of %d bytes", len(data))
+		}),
+		WithOnError(func(err error) {
+			t.Logf("received error: %v", err)
+		}),
+	)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	if err := session.Init(ctx); err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+	if session.sessionToken == "" {
+		t.Fatal("expected session token to be populated after Init")
+	}
+
+	connectionID, err := session.Start(ctx)
+	if err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	if connectionID == "" {
+		t.Fatal("expected non-empty connection id")
+	}
+
+	defer func() {
+		if err := session.Close(); err != nil {
+			t.Logf("Close returned error: %v", err)
+		}
+	}()
+
+	reqID, err := session.SendAudio(audioData, true)
+	if err != nil {
+		t.Fatalf("SendAudio failed: %v", err)
+	}
+	if reqID == "" {
+		t.Fatal("expected non-empty request id")
+	}
+	t.Logf("sent audio with request id %q", reqID)
+
+	<-ctx.Done()
+}
+
+func envOrSkip(t *testing.T, key string) string {
+	t.Helper()
+	value, ok := os.LookupEnv(key)
+	if !ok || strings.TrimSpace(value) == "" {
+		t.Skipf("%s not set; skipping end-to-end test", key)
+	}
+	return value
 }
