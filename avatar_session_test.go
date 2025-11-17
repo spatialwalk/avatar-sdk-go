@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	message "github.com/spatialwalk/avatar-sdk-go/proto/generated"
+	"google.golang.org/protobuf/proto"
 )
 
 func TestAvatarSessionInitSuccess(t *testing.T) {
@@ -208,5 +210,127 @@ func TestAvatarSessionStartDialFailure(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "unauthorized") {
 		t.Fatalf("expected error to include server response, got %v", err)
+	}
+}
+
+func TestReqIDGeneration(t *testing.T) {
+	upgrader := websocket.Upgrader{
+		CheckOrigin: func(r *http.Request) bool { return true },
+	}
+
+	serverConnCh := make(chan *websocket.Conn, 1)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Fatalf("failed to upgrade connection: %v", err)
+		}
+		serverConnCh <- conn
+	}))
+	defer server.Close()
+
+	wsURL := strings.Replace(server.URL, "http", "ws", 1)
+
+	clientConn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("failed to dial websocket server: %v", err)
+	}
+	defer clientConn.Close() // nolint:errcheck
+
+	session := NewAvatarSession()
+	session.conn = clientConn
+	defer func() {
+		if err := session.Close(); err != nil {
+			t.Fatalf("failed to close session: %v", err)
+		}
+	}()
+
+	serverConn := <-serverConnCh
+	defer serverConn.Close() // nolint:errcheck
+
+	reqIDs := make(chan string, 8)
+	go func() {
+		for {
+			messageType, payload, err := serverConn.ReadMessage()
+			if err != nil {
+				return
+			}
+			if messageType != websocket.BinaryMessage {
+				continue
+			}
+
+			var envelope message.Message
+			if err := proto.Unmarshal(payload, &envelope); err != nil {
+				continue
+			}
+
+			input := envelope.GetClientAudioInput()
+			if input == nil {
+				continue
+			}
+
+			reqIDs <- input.GetReqId()
+		}
+	}()
+
+	waitForReqID := func() string {
+		select {
+		case reqID := <-reqIDs:
+			return reqID
+		case <-time.After(2 * time.Second):
+			t.Fatal("timed out waiting for req id")
+		}
+		return ""
+	}
+
+	firstChunk := []byte{0x01, 0x02, 0x03, 0x04}
+	firstReqID, err := session.SendAudio(firstChunk, false)
+	if err != nil {
+		t.Fatalf("SendAudio returned error for first chunk: %v", err)
+	}
+	if firstReqID == "" {
+		t.Fatal("expected first chunk to return a req id")
+	}
+	if received := waitForReqID(); received != firstReqID {
+		t.Fatalf("expected server to receive req id %q, got %q", firstReqID, received)
+	}
+
+	secondChunk := []byte{0x05, 0x06}
+	secondReqID, err := session.SendAudio(secondChunk, true)
+	if err != nil {
+		t.Fatalf("SendAudio returned error for second chunk: %v", err)
+	}
+	if secondReqID != firstReqID {
+		t.Fatalf("expected second chunk to reuse req id %q, got %q", firstReqID, secondReqID)
+	}
+	if received := waitForReqID(); received != firstReqID {
+		t.Fatalf("expected server to receive req id %q for second chunk, got %q", firstReqID, received)
+	}
+
+	thirdChunk := []byte{0x07, 0x08, 0x09}
+	thirdReqID, err := session.SendAudio(thirdChunk, false)
+	if err != nil {
+		t.Fatalf("SendAudio returned error for third chunk: %v", err)
+	}
+	if thirdReqID == "" {
+		t.Fatal("expected third chunk to return a req id")
+	}
+	if thirdReqID == firstReqID {
+		t.Fatalf("expected third chunk to have a new req id distinct from %q", firstReqID)
+	}
+	if received := waitForReqID(); received != thirdReqID {
+		t.Fatalf("expected server to receive req id %q for third chunk, got %q", thirdReqID, received)
+	}
+
+	fourthChunk := []byte{0x0A, 0x0B}
+	fourthReqID, err := session.SendAudio(fourthChunk, true)
+	if err != nil {
+		t.Fatalf("SendAudio returned error for fourth chunk: %v", err)
+	}
+	if fourthReqID != thirdReqID {
+		t.Fatalf("expected fourth chunk to reuse req id %q, got %q", thirdReqID, fourthReqID)
+	}
+	if received := waitForReqID(); received != thirdReqID {
+		t.Fatalf("expected server to receive req id %q for fourth chunk, got %q", thirdReqID, received)
 	}
 }

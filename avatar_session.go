@@ -30,6 +30,7 @@ type AvatarSession struct {
 	sendDuration     time.Duration
 	expectedSegments int
 	receivedSegments int
+	currentReqID     string
 }
 
 // NewAvatarSession creates a new AvatarSession using the provided SessionOptions.
@@ -201,10 +202,16 @@ func (s *AvatarSession) SendAudio(audio []byte, end bool) (string, error) {
 
 	s.sendDuration += time.Duration(len(audio)) * time.Second / time.Duration(s.config.SampleRate*s.config.SampleWidth)
 
-	reqId, err := GenerateLogID()
-	if err != nil {
-		return "", fmt.Errorf("send audio: generate request id: %w", err)
+	var err error
+	if s.currentReqID == "" {
+		s.currentReqID, err = GenerateLogID()
+		if err != nil {
+			return "", fmt.Errorf("send audio: generate request id: %w", err)
+		}
 	}
+
+	reqId := s.currentReqID
+
 	msg := &message.Message{
 		Type: message.MessageType_MESSAGE_CLIENT_AUDIO_INPUT,
 		Data: &message.Message_ClientAudioInput{
@@ -231,6 +238,7 @@ func (s *AvatarSession) SendAudio(audio []byte, end bool) (string, error) {
 		} else {
 			s.expectedSegments = int((s.sendDuration.Seconds()-2)/4) + 2
 		}
+		s.currentReqID = ""
 	}
 
 	return reqId, nil
