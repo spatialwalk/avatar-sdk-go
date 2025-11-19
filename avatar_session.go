@@ -249,8 +249,16 @@ func (s *AvatarSession) Close() error {
 		return nil
 	}
 	if s.conn != nil {
-		_ = s.conn.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
-		_ = s.conn.Close()
+		err := s.conn.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
+		if err != nil {
+			_ = s.conn.Close()
+			return fmt.Errorf("close avatar session: send close message: %w", err)
+		}
+		err = s.conn.Close()
+		if err != nil {
+			s.conn = nil
+			return fmt.Errorf("close avatar session: close connection: %w", err)
+		}
 		s.conn = nil
 	}
 	if s.config.OnClose != nil {
