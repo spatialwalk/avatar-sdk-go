@@ -270,6 +270,764 @@ func TestAvatarSessionStartMissingAppID(t *testing.T) {
 	}
 }
 
+func TestAvatarSessionConfigNilSession(t *testing.T) {
+	var session *AvatarSession
+	cfg := session.Config()
+	if cfg.AvatarID != "" {
+		t.Fatal("expected empty config for nil session")
+	}
+}
+
+func TestAvatarSessionConfigNilConfig(t *testing.T) {
+	session := &AvatarSession{config: nil}
+	cfg := session.Config()
+	if cfg.AvatarID != "" {
+		t.Fatal("expected empty config for nil config")
+	}
+}
+
+func TestAvatarSessionInitNilSession(t *testing.T) {
+	var session *AvatarSession
+	err := session.Init(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "session is nil") {
+		t.Fatalf("expected session is nil error, got %v", err)
+	}
+}
+
+func TestAvatarSessionInitNilConfig(t *testing.T) {
+	session := &AvatarSession{config: nil}
+	err := session.Init(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "session config is nil") {
+		t.Fatalf("expected session config is nil error, got %v", err)
+	}
+}
+
+func TestAvatarSessionInitMissingConsoleEndpoint(t *testing.T) {
+	session := NewAvatarSession(
+		WithAPIKey("api-key"),
+		WithExpireAt(time.Now().Add(5*time.Minute)),
+	)
+	err := session.Init(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "missing console endpoint URL") {
+		t.Fatalf("expected missing console endpoint URL error, got %v", err)
+	}
+}
+
+func TestAvatarSessionInitMissingExpireAt(t *testing.T) {
+	session := NewAvatarSession(
+		WithAPIKey("api-key"),
+		WithConsoleEndpointURL("https://console.test"),
+	)
+	err := session.Init(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "missing expireAt") {
+		t.Fatalf("expected missing expireAt error, got %v", err)
+	}
+}
+
+func TestAvatarSessionInitNon200Status(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	session := NewAvatarSession(
+		WithAPIKey("api-key"),
+		WithExpireAt(time.Now().Add(5*time.Minute)),
+		WithConsoleEndpointURL(server.URL),
+	)
+
+	err := session.Init(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "request failed with status 500") {
+		t.Fatalf("expected status 500 error, got %v", err)
+	}
+}
+
+func TestAvatarSessionInitInvalidJSON(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("not valid json"))
+	}))
+	defer server.Close()
+
+	session := NewAvatarSession(
+		WithAPIKey("api-key"),
+		WithExpireAt(time.Now().Add(5*time.Minute)),
+		WithConsoleEndpointURL(server.URL),
+	)
+
+	err := session.Init(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "decode response") {
+		t.Fatalf("expected decode response error, got %v", err)
+	}
+}
+
+func TestAvatarSessionInitEmptyToken(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(sessionTokenResponse{SessionToken: ""})
+	}))
+	defer server.Close()
+
+	session := NewAvatarSession(
+		WithAPIKey("api-key"),
+		WithExpireAt(time.Now().Add(5*time.Minute)),
+		WithConsoleEndpointURL(server.URL),
+	)
+
+	err := session.Init(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "empty session token in response") {
+		t.Fatalf("expected empty session token error, got %v", err)
+	}
+}
+
+func TestAvatarSessionStartNilSession(t *testing.T) {
+	var session *AvatarSession
+	_, err := session.Start(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "session is nil") {
+		t.Fatalf("expected session is nil error, got %v", err)
+	}
+}
+
+func TestAvatarSessionStartNilConfig(t *testing.T) {
+	session := &AvatarSession{config: nil}
+	session.sessionToken = "token"
+	_, err := session.Start(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "session config is nil") {
+		t.Fatalf("expected session config is nil error, got %v", err)
+	}
+}
+
+func TestAvatarSessionStartAlreadyStarted(t *testing.T) {
+	upgrader := websocket.Upgrader{
+		CheckOrigin: func(r *http.Request) bool { return true },
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, _ := upgrader.Upgrade(w, r, nil)
+		defer conn.Close()
+		select {}
+	}))
+	defer server.Close()
+
+	wsURL := strings.Replace(server.URL, "http", "ws", 1)
+	conn, _, _ := websocket.DefaultDialer.Dial(wsURL, nil)
+	defer conn.Close()
+
+	session := NewAvatarSession(
+		WithAvatarID("avatar-123"),
+		WithAppID("app-123"),
+		WithIngressEndpointURL("wss://example.com"),
+	)
+	session.sessionToken = "token"
+	session.conn = conn
+
+	_, err := session.Start(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "session already started") {
+		t.Fatalf("expected session already started error, got %v", err)
+	}
+}
+
+func TestAvatarSessionStartMissingIngressEndpoint(t *testing.T) {
+	session := NewAvatarSession(
+		WithAvatarID("avatar-123"),
+		WithAppID("app-123"),
+	)
+	session.sessionToken = "token"
+
+	_, err := session.Start(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "missing ingress endpoint URL") {
+		t.Fatalf("expected missing ingress endpoint URL error, got %v", err)
+	}
+}
+
+func TestAvatarSessionStartMissingAvatarID(t *testing.T) {
+	session := NewAvatarSession(
+		WithAppID("app-123"),
+		WithIngressEndpointURL("wss://example.com"),
+	)
+	session.sessionToken = "token"
+
+	_, err := session.Start(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "missing avatar ID") {
+		t.Fatalf("expected missing avatar ID error, got %v", err)
+	}
+}
+
+func TestAvatarSessionStartSchemeVariations(t *testing.T) {
+	tests := []struct {
+		scheme      string
+		expectError bool
+		errorMsg    string
+	}{
+		{"http://example.com", false, ""},
+		{"https://example.com", false, ""},
+		{"ws://example.com", false, ""},
+		{"wss://example.com", false, ""},
+		{"example.com", true, "scheme missing"},
+		{"ftp://example.com", true, "unsupported scheme"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.scheme, func(t *testing.T) {
+			session := NewAvatarSession(
+				WithAvatarID("avatar-123"),
+				WithAppID("app-123"),
+				WithIngressEndpointURL(tt.scheme),
+			)
+			session.sessionToken = "token"
+
+			_, err := session.Start(context.Background())
+			if tt.expectError {
+				if err == nil {
+					t.Fatalf("expected error containing %q, got nil", tt.errorMsg)
+				}
+				if !strings.Contains(err.Error(), tt.errorMsg) {
+					t.Fatalf("expected error containing %q, got %v", tt.errorMsg, err)
+				}
+			}
+			// Note: for valid schemes, we'll get dial errors, which is expected
+		})
+	}
+}
+
+func TestAvatarSessionStartWithQueryAuth(t *testing.T) {
+	upgrader := websocket.Upgrader{
+		CheckOrigin: func(r *http.Request) bool { return true },
+	}
+
+	var receivedAppId string
+	var receivedSessionKey string
+	var serverConn *websocket.Conn
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedAppId = r.URL.Query().Get("appId")
+		receivedSessionKey = r.URL.Query().Get("sessionKey")
+
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		serverConn = conn
+
+		// v2 handshake
+		go func() {
+			messageType, _, err := conn.ReadMessage()
+			if err != nil || messageType != websocket.BinaryMessage {
+				return
+			}
+
+			confirmMsg := &message.Message{
+				Type: message.MessageType_MESSAGE_SERVER_CONFIRM_SESSION,
+				Data: &message.Message_ServerConfirmSession{
+					ServerConfirmSession: &message.ServerConfirmSession{
+						ConnectionId: "conn-id-query-auth",
+					},
+				},
+			}
+			confirmData, _ := proto.Marshal(confirmMsg)
+			_ = conn.WriteMessage(websocket.BinaryMessage, confirmData)
+		}()
+	}))
+	defer server.Close()
+	defer func() {
+		if serverConn != nil {
+			_ = serverConn.Close()
+		}
+	}()
+
+	session := NewAvatarSession(
+		WithAvatarID("avatar-123"),
+		WithAppID("app-123"),
+		WithUseQueryAuth(true),
+		WithIngressEndpointURL(strings.Replace(server.URL, "http", "ws", 1)),
+	)
+	session.sessionToken = "session-token-123"
+
+	connectionID, err := session.Start(context.Background())
+	if err != nil {
+		t.Fatalf("Start returned error: %v", err)
+	}
+
+	if receivedAppId != "app-123" {
+		t.Fatalf("expected appId query param, got %q", receivedAppId)
+	}
+	if receivedSessionKey != "session-token-123" {
+		t.Fatalf("expected sessionKey query param, got %q", receivedSessionKey)
+	}
+	if connectionID != "conn-id-query-auth" {
+		t.Fatalf("expected connection ID, got %q", connectionID)
+	}
+
+	_ = session.Close()
+}
+
+func TestAvatarSessionStartHandshakeServerError(t *testing.T) {
+	upgrader := websocket.Upgrader{
+		CheckOrigin: func(r *http.Request) bool { return true },
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+
+		// Read ClientConfigureSession
+		_, _, _ = conn.ReadMessage()
+
+		// Send ServerError
+		errMsg := &message.Message{
+			Type: message.MessageType_MESSAGE_SERVER_ERROR,
+			Data: &message.Message_ServerError{
+				ServerError: &message.ServerError{
+					ConnectionId: "conn-123",
+					ReqId:        "req-456",
+					Code:         400,
+					Message:      "invalid configuration",
+				},
+			},
+		}
+		errData, _ := proto.Marshal(errMsg)
+		_ = conn.WriteMessage(websocket.BinaryMessage, errData)
+	}))
+	defer server.Close()
+
+	session := NewAvatarSession(
+		WithAvatarID("avatar-123"),
+		WithAppID("app-123"),
+		WithIngressEndpointURL(strings.Replace(server.URL, "http", "ws", 1)),
+	)
+	session.sessionToken = "token"
+
+	_, err := session.Start(context.Background())
+	if err == nil {
+		t.Fatal("expected error from ServerError response")
+	}
+	if !strings.Contains(err.Error(), "ServerError during handshake") {
+		t.Fatalf("expected ServerError during handshake, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "invalid configuration") {
+		t.Fatalf("expected error message, got %v", err)
+	}
+}
+
+func TestAvatarSessionStartHandshakeUnexpectedMessageType(t *testing.T) {
+	upgrader := websocket.Upgrader{
+		CheckOrigin: func(r *http.Request) bool { return true },
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+
+		// Read ClientConfigureSession
+		_, _, _ = conn.ReadMessage()
+
+		// Send unexpected message type (e.g., MESSAGE_CLIENT_AUDIO_INPUT)
+		unexpectedMsg := &message.Message{
+			Type: message.MessageType_MESSAGE_CLIENT_AUDIO_INPUT,
+		}
+		unexpectedData, _ := proto.Marshal(unexpectedMsg)
+		_ = conn.WriteMessage(websocket.BinaryMessage, unexpectedData)
+	}))
+	defer server.Close()
+
+	session := NewAvatarSession(
+		WithAvatarID("avatar-123"),
+		WithAppID("app-123"),
+		WithIngressEndpointURL(strings.Replace(server.URL, "http", "ws", 1)),
+	)
+	session.sessionToken = "token"
+
+	_, err := session.Start(context.Background())
+	if err == nil {
+		t.Fatal("expected error from unexpected message type")
+	}
+	if !strings.Contains(err.Error(), "unexpected message during handshake") {
+		t.Fatalf("expected unexpected message error, got %v", err)
+	}
+}
+
+func TestAvatarSessionStartHandshakeTextMessage(t *testing.T) {
+	upgrader := websocket.Upgrader{
+		CheckOrigin: func(r *http.Request) bool { return true },
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+
+		// Read ClientConfigureSession
+		_, _, _ = conn.ReadMessage()
+
+		// Send text message instead of binary
+		_ = conn.WriteMessage(websocket.TextMessage, []byte("not binary"))
+	}))
+	defer server.Close()
+
+	session := NewAvatarSession(
+		WithAvatarID("avatar-123"),
+		WithAppID("app-123"),
+		WithIngressEndpointURL(strings.Replace(server.URL, "http", "ws", 1)),
+	)
+	session.sessionToken = "token"
+
+	_, err := session.Start(context.Background())
+	if err == nil {
+		t.Fatal("expected error from text message")
+	}
+	if !strings.Contains(err.Error(), "expected binary protobuf message") {
+		t.Fatalf("expected binary protobuf message error, got %v", err)
+	}
+}
+
+func TestAvatarSessionStartHandshakeInvalidProtobuf(t *testing.T) {
+	upgrader := websocket.Upgrader{
+		CheckOrigin: func(r *http.Request) bool { return true },
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+
+		// Read ClientConfigureSession
+		_, _, _ = conn.ReadMessage()
+
+		// Send invalid protobuf
+		_ = conn.WriteMessage(websocket.BinaryMessage, []byte("not valid protobuf"))
+	}))
+	defer server.Close()
+
+	session := NewAvatarSession(
+		WithAvatarID("avatar-123"),
+		WithAppID("app-123"),
+		WithIngressEndpointURL(strings.Replace(server.URL, "http", "ws", 1)),
+	)
+	session.sessionToken = "token"
+
+	_, err := session.Start(context.Background())
+	if err == nil {
+		t.Fatal("expected error from invalid protobuf")
+	}
+	if !strings.Contains(err.Error(), "invalid protobuf payload") {
+		t.Fatalf("expected invalid protobuf payload error, got %v", err)
+	}
+}
+
+func TestAvatarSessionStartHandshakeEmptyConnectionId(t *testing.T) {
+	upgrader := websocket.Upgrader{
+		CheckOrigin: func(r *http.Request) bool { return true },
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+
+		// Read ClientConfigureSession
+		_, _, _ = conn.ReadMessage()
+
+		// Send ServerConfirmSession with empty connection_id
+		confirmMsg := &message.Message{
+			Type: message.MessageType_MESSAGE_SERVER_CONFIRM_SESSION,
+			Data: &message.Message_ServerConfirmSession{
+				ServerConfirmSession: &message.ServerConfirmSession{
+					ConnectionId: "",
+				},
+			},
+		}
+		confirmData, _ := proto.Marshal(confirmMsg)
+		_ = conn.WriteMessage(websocket.BinaryMessage, confirmData)
+	}))
+	defer server.Close()
+
+	session := NewAvatarSession(
+		WithAvatarID("avatar-123"),
+		WithAppID("app-123"),
+		WithIngressEndpointURL(strings.Replace(server.URL, "http", "ws", 1)),
+	)
+	session.sessionToken = "token"
+
+	_, err := session.Start(context.Background())
+	if err == nil {
+		t.Fatal("expected error from empty connection_id")
+	}
+	if !strings.Contains(err.Error(), "connection_id is empty") {
+		t.Fatalf("expected empty connection_id error, got %v", err)
+	}
+}
+
+func TestAvatarSessionCloseNilSession(t *testing.T) {
+	var session *AvatarSession
+	err := session.Close()
+	if err != nil {
+		t.Fatalf("expected nil error for nil session, got %v", err)
+	}
+}
+
+func TestAvatarSessionCloseWithNoConnection(t *testing.T) {
+	session := NewAvatarSession()
+	err := session.Close()
+	if err != nil {
+		t.Fatalf("expected nil error for session without connection, got %v", err)
+	}
+}
+
+func TestAvatarSessionSendAudioNoConnection(t *testing.T) {
+	session := NewAvatarSession()
+	_, err := session.SendAudio([]byte{0x01}, true)
+	if err == nil || !strings.Contains(err.Error(), "websocket connection is not established") {
+		t.Fatalf("expected websocket connection error, got %v", err)
+	}
+}
+
+func TestFormatSessionTokenErrorEmpty(t *testing.T) {
+	resp := &sessionTokenResponse{Errors: nil}
+	result := formatSessionTokenError(500, resp)
+	if !strings.Contains(result, "unknown error with status 500") {
+		t.Fatalf("expected unknown error message, got %q", result)
+	}
+}
+
+func TestReadLoopServerError(t *testing.T) {
+	upgrader := websocket.Upgrader{
+		CheckOrigin: func(r *http.Request) bool { return true },
+	}
+
+	errorReceived := make(chan error, 1)
+	handshakeComplete := make(chan struct{})
+	serverDone := make(chan struct{})
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+
+		// Read ClientConfigureSession
+		_, _, _ = conn.ReadMessage()
+
+		// Send ServerConfirmSession
+		confirmMsg := &message.Message{
+			Type: message.MessageType_MESSAGE_SERVER_CONFIRM_SESSION,
+			Data: &message.Message_ServerConfirmSession{
+				ServerConfirmSession: &message.ServerConfirmSession{
+					ConnectionId: "conn-123",
+				},
+			},
+		}
+		confirmData, _ := proto.Marshal(confirmMsg)
+		_ = conn.WriteMessage(websocket.BinaryMessage, confirmData)
+
+		// Wait for handshake to complete before sending more messages
+		<-handshakeComplete
+
+		// Send ServerError
+		errMsg := &message.Message{
+			Type: message.MessageType_MESSAGE_SERVER_ERROR,
+			Data: &message.Message_ServerError{
+				ServerError: &message.ServerError{
+					ConnectionId: "conn-123",
+					ReqId:        "req-456",
+					Code:         500,
+					Message:      "internal server error",
+				},
+			},
+		}
+		errData, _ := proto.Marshal(errMsg)
+		_ = conn.WriteMessage(websocket.BinaryMessage, errData)
+
+		// Close from server side
+		_ = conn.Close()
+		close(serverDone)
+	}))
+	defer server.Close()
+
+	session := NewAvatarSession(
+		WithAvatarID("avatar-123"),
+		WithAppID("app-123"),
+		WithIngressEndpointURL(strings.Replace(server.URL, "http", "ws", 1)),
+		WithOnError(func(err error) {
+			select {
+			case errorReceived <- err:
+			default:
+			}
+		}),
+	)
+	session.sessionToken = "token"
+
+	_, err := session.Start(context.Background())
+	if err != nil {
+		t.Fatalf("Start returned error: %v", err)
+	}
+
+	// Signal that handshake is complete
+	close(handshakeComplete)
+
+	select {
+	case err := <-errorReceived:
+		if !strings.Contains(err.Error(), "internal server error") {
+			t.Fatalf("expected error to contain message, got %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for error callback")
+	}
+
+	// Wait for server to close connection
+	<-serverDone
+}
+
+func TestReadLoopAnimationFrame(t *testing.T) {
+	upgrader := websocket.Upgrader{
+		CheckOrigin: func(r *http.Request) bool { return true },
+	}
+
+	framesReceived := make(chan struct {
+		data []byte
+		last bool
+	}, 2)
+	handshakeComplete := make(chan struct{})
+	serverDone := make(chan struct{})
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+
+		// Read ClientConfigureSession
+		_, _, _ = conn.ReadMessage()
+
+		// Send ServerConfirmSession
+		confirmMsg := &message.Message{
+			Type: message.MessageType_MESSAGE_SERVER_CONFIRM_SESSION,
+			Data: &message.Message_ServerConfirmSession{
+				ServerConfirmSession: &message.ServerConfirmSession{
+					ConnectionId: "conn-123",
+				},
+			},
+		}
+		confirmData, _ := proto.Marshal(confirmMsg)
+		_ = conn.WriteMessage(websocket.BinaryMessage, confirmData)
+
+		// Wait for handshake to complete before sending more messages
+		<-handshakeComplete
+
+		// Send animation frames
+		for i := 0; i < 2; i++ {
+			animMsg := &message.Message{
+				Type: message.MessageType_MESSAGE_SERVER_RESPONSE_ANIMATION,
+				Data: &message.Message_ServerResponseAnimation{
+					ServerResponseAnimation: &message.ServerResponseAnimation{
+						ConnectionId: "conn-123",
+						ReqId:        "req-456",
+						End:          i == 1,
+					},
+				},
+			}
+			animData, _ := proto.Marshal(animMsg)
+			_ = conn.WriteMessage(websocket.BinaryMessage, animData)
+		}
+
+		// Close from server side to trigger clean exit of read loop
+		_ = conn.Close()
+		close(serverDone)
+	}))
+	defer server.Close()
+
+	session := NewAvatarSession(
+		WithAvatarID("avatar-123"),
+		WithAppID("app-123"),
+		WithIngressEndpointURL(strings.Replace(server.URL, "http", "ws", 1)),
+		WithTransportFrames(func(data []byte, last bool) {
+			framesReceived <- struct {
+				data []byte
+				last bool
+			}{data: data, last: last}
+		}),
+	)
+	session.sessionToken = "token"
+
+	_, err := session.Start(context.Background())
+	if err != nil {
+		t.Fatalf("Start returned error: %v", err)
+	}
+
+	// Signal that handshake is complete
+	close(handshakeComplete)
+
+	// Wait for both frames
+	for i := 0; i < 2; i++ {
+		select {
+		case frame := <-framesReceived:
+			if i == 1 && !frame.last {
+				t.Fatal("expected last frame to have last=true")
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("timed out waiting for animation frame")
+		}
+	}
+
+	// Wait for server to close connection
+	<-serverDone
+}
+
+func TestAvatarSessionStartDial400Error(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "bad request", http.StatusBadRequest)
+	}))
+	defer server.Close()
+
+	session := NewAvatarSession(
+		WithAvatarID("avatar-123"),
+		WithAppID("app-123"),
+		WithIngressEndpointURL(strings.Replace(server.URL, "http", "ws", 1)),
+	)
+	session.sessionToken = "session-token-123"
+
+	_, err := session.Start(context.Background())
+	if err == nil {
+		t.Fatal("expected Start to return error on dial failure")
+	}
+	if !strings.Contains(err.Error(), "sessionTokenInvalid") {
+		t.Fatalf("expected error to include sessionTokenInvalid code, got %v", err)
+	}
+}
+
+func TestAvatarSessionStartDial404Error(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "not found", http.StatusNotFound)
+	}))
+	defer server.Close()
+
+	session := NewAvatarSession(
+		WithAvatarID("avatar-123"),
+		WithAppID("app-123"),
+		WithIngressEndpointURL(strings.Replace(server.URL, "http", "ws", 1)),
+	)
+	session.sessionToken = "session-token-123"
+
+	_, err := session.Start(context.Background())
+	if err == nil {
+		t.Fatal("expected Start to return error on dial failure")
+	}
+	if !strings.Contains(err.Error(), "appIDUnrecognized") {
+		t.Fatalf("expected error to include appIDUnrecognized code, got %v", err)
+	}
+}
+
 func TestReqIDGeneration(t *testing.T) {
 	upgrader := websocket.Upgrader{
 		CheckOrigin: func(r *http.Request) bool { return true },

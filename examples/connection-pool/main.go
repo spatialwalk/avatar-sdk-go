@@ -26,9 +26,9 @@ import (
 
 // Configuration
 const (
-	poolSize           = 100           // Number of connections to maintain
-	concurrentRequests = 5             // Number of concurrent audio requests per round
-	numRounds          = 10            // Number of rounds to run
+	poolSize           = 100              // Number of connections to maintain
+	concurrentRequests = 5                // Number of concurrent audio requests per round
+	numRounds          = 10               // Number of rounds to run
 	roundInterval      = 30 * time.Second // Seconds between rounds (total ~5 minutes with 10 rounds)
 	audioFilePath      = "../../audio.pcm"
 	requestTimeout     = 45 * time.Second
