@@ -1,3 +1,12 @@
+// Example: Single Audio Clip
+//
+// This example demonstrates how to:
+// 1. Initialize an avatar session
+// 2. Connect to the avatar service
+// 3. Send audio data
+// 4. Receive animation frames
+// 5. Properly close the session
+
 package main
 
 import (
@@ -6,7 +15,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"net/http"
 	"os"
 	"strings"
 	"sync"
@@ -16,26 +24,22 @@ import (
 )
 
 const (
-	audioFilePath     = "./audio.pcm"
-	defaultListenAddr = ":8080"
-	requestTimeout    = 45 * time.Second
-	sessionTTL        = 2 * time.Minute
+	audioFilePath  = "../../audio.pcm"
+	requestTimeout = 45 * time.Second
+	sessionTTL     = 2 * time.Minute
 )
 
 type serverConfig struct {
-	APIKey     string
-	ConsoleURL string
-	IngressURL string
-	AvatarID   string
-	ListenAddr string
+	APIKey       string
+	AppID        string
+	UseQueryAuth bool
+	ConsoleURL   string
+	IngressURL   string
+	AvatarID     string
 }
 
-type mediaServer struct {
-	cfg   *serverConfig
-	audio []byte
-}
-
-type animationCollector struct {
+// AnimationCollector collects animation frames from the avatar session.
+type AnimationCollector struct {
 	mu     sync.Mutex
 	frames [][]byte
 	last   bool
@@ -45,8 +49,9 @@ type animationCollector struct {
 }
 
 type mediaResponse struct {
-	Audio      []byte   `json:"audio"`
-	Animations [][]byte `json:"animations"`
+	Audio           []byte `json:"audio"`
+	AnimationsCount int    `json:"animations_count"`
+	AnimationsSizes []int  `json:"animations_sizes"`
 }
 
 func main() {
@@ -60,51 +65,106 @@ func main() {
 		log.Fatalf("audio fixture error: %v", err)
 	}
 
-	server := &mediaServer{
-		cfg:   cfg,
-		audio: audio,
+	fmt.Printf("Loaded audio file: %d bytes\n", len(audio))
+
+	// Create animation collector
+	collector := newAnimationCollector()
+
+	// Create avatar session
+	session := avatarsdkgo.NewAvatarSession(
+		avatarsdkgo.WithAPIKey(cfg.APIKey),
+		avatarsdkgo.WithAppID(cfg.AppID),
+		avatarsdkgo.WithUseQueryAuth(cfg.UseQueryAuth),
+		avatarsdkgo.WithConsoleEndpointURL(cfg.ConsoleURL),
+		avatarsdkgo.WithIngressEndpointURL(cfg.IngressURL),
+		avatarsdkgo.WithAvatarID(cfg.AvatarID),
+		avatarsdkgo.WithExpireAt(time.Now().Add(sessionTTL).UTC()),
+		avatarsdkgo.WithTransportFrames(collector.transportFrame),
+		avatarsdkgo.WithOnError(collector.onError),
+		avatarsdkgo.WithOnClose(collector.onClose),
+	)
+
+	ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
+	defer cancel()
+
+	// Initialize session (get token)
+	fmt.Println("Initializing session...")
+	if err := session.Init(ctx); err != nil {
+		log.Fatalf("Session token error: %v", err)
+	}
+	fmt.Println("Session initialized")
+
+	// Start WebSocket connection
+	fmt.Println("Starting WebSocket connection...")
+	connectionID, err := session.Start(ctx)
+	if err != nil {
+		log.Fatalf("Start session error: %v", err)
+	}
+	fmt.Printf("Connected with connection ID: %s\n", connectionID)
+
+	// Send audio
+	fmt.Println("Sending audio...")
+	requestID, err := session.SendAudio(audio, true)
+	if err != nil {
+		log.Fatalf("Send audio error: %v", err)
+	}
+	fmt.Printf("Sent audio request: %s\n", requestID)
+
+	// Wait for animation frames
+	fmt.Println("Waiting for animation frames...")
+	if err := collector.wait(ctx); err != nil {
+		log.Fatalf("Wait for animations error: %v", err)
 	}
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("/media", server.handleMedia)
+	// Get results
+	animations := collector.framesCopy()
+	fmt.Printf("Received %d animation frames\n", len(animations))
 
-	log.Printf("listening on %s", cfg.ListenAddr)
-	if err := http.ListenAndServe(cfg.ListenAddr, enableCORS(mux)); err != nil {
-		log.Fatalf("server error: %v", err)
+	// Create response (similar to the Python example)
+	audioPreview := audio
+	if len(audioPreview) > 100 {
+		audioPreview = audio[:100]
 	}
-}
 
-func enableCORS(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+	animSizes := make([]int, len(animations))
+	for i, anim := range animations {
+		animSizes[i] = len(anim)
+	}
 
-		if r.Method == "OPTIONS" {
-			w.WriteHeader(http.StatusOK)
-			return
-		}
+	response := mediaResponse{
+		Audio:           audioPreview, // Just first 100 bytes for demo
+		AnimationsCount: len(animations),
+		AnimationsSizes: animSizes,
+	}
 
-		next.ServeHTTP(w, r)
-	})
+	fmt.Println("\nResponse summary:")
+	respJSON, _ := json.MarshalIndent(response, "", "  ")
+	fmt.Println(string(respJSON))
+
+	// Close session
+	fmt.Println("\nClosing session...")
+	if err := session.Close(); err != nil {
+		log.Printf("close session error: %v", err)
+	}
+	fmt.Println("Session closed")
 }
 
 func loadConfig() (*serverConfig, error) {
 	cfg := &serverConfig{
-		APIKey:     strings.TrimSpace(os.Getenv("AVATAR_API_KEY")),
-		ConsoleURL: strings.TrimSpace(os.Getenv("AVATAR_CONSOLE_ENDPOINT")),
-		IngressURL: strings.TrimSpace(os.Getenv("AVATAR_INGRESS_ENDPOINT")),
-		AvatarID:   strings.TrimSpace(os.Getenv("AVATAR_SESSION_AVATAR_ID")),
-		ListenAddr: strings.TrimSpace(os.Getenv("LISTEN_ADDR")),
-	}
-
-	if cfg.ListenAddr == "" {
-		cfg.ListenAddr = defaultListenAddr
+		APIKey:       strings.TrimSpace(os.Getenv("AVATAR_API_KEY")),
+		AppID:        strings.TrimSpace(os.Getenv("AVATAR_APP_ID")),
+		UseQueryAuth: strings.ToLower(strings.TrimSpace(os.Getenv("AVATAR_USE_QUERY_AUTH"))) == "true" || os.Getenv("AVATAR_USE_QUERY_AUTH") == "1",
+		ConsoleURL:   strings.TrimSpace(os.Getenv("AVATAR_CONSOLE_ENDPOINT")),
+		IngressURL:   strings.TrimSpace(os.Getenv("AVATAR_INGRESS_ENDPOINT")),
+		AvatarID:     strings.TrimSpace(os.Getenv("AVATAR_SESSION_AVATAR_ID")),
 	}
 
 	var missing []string
 	if cfg.APIKey == "" {
 		missing = append(missing, "AVATAR_API_KEY")
+	}
+	if cfg.AppID == "" {
+		missing = append(missing, "AVATAR_APP_ID")
 	}
 	if cfg.ConsoleURL == "" {
 		missing = append(missing, "AVATAR_CONSOLE_ENDPOINT")
@@ -131,82 +191,13 @@ func loadAudio(path string) ([]byte, error) {
 	return data, nil
 }
 
-func (s *mediaServer) handleMedia(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		w.Header().Set("Allow", http.MethodGet)
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	ctx, cancel := context.WithTimeout(r.Context(), requestTimeout)
-	defer cancel()
-
-	collector := newAnimationCollector()
-	session := avatarsdkgo.NewAvatarSession(
-		avatarsdkgo.WithAPIKey(s.cfg.APIKey),
-		avatarsdkgo.WithConsoleEndpointURL(s.cfg.ConsoleURL),
-		avatarsdkgo.WithIngressEndpointURL(s.cfg.IngressURL),
-		avatarsdkgo.WithAvatarID(s.cfg.AvatarID),
-		avatarsdkgo.WithExpireAt(time.Now().Add(sessionTTL).UTC()),
-		avatarsdkgo.WithTransportFrames(collector.transportFrame),
-		avatarsdkgo.WithOnError(collector.onError),
-		avatarsdkgo.WithOnClose(collector.onClose),
-	)
-
-	if err := session.Init(ctx); err != nil {
-		http.Error(w, fmt.Sprintf("init session: %v", err), http.StatusBadGateway)
-		return
-	}
-
-	connectionID, err := session.Start(ctx)
-	if err != nil {
-		http.Error(w, fmt.Sprintf("start session: %v", err), http.StatusBadGateway)
-		return
-	}
-	defer func() {
-		if closeErr := session.Close(); closeErr != nil {
-			log.Printf("close session %s: %v", connectionID, closeErr)
-		}
-	}()
-
-	requestID, err := session.SendAudio(s.audio, true)
-	if err != nil {
-		http.Error(w, fmt.Sprintf("send audio: %v", err), http.StatusBadGateway)
-		return
-	}
-	log.Printf("sent audio request %s on connection %s", requestID, connectionID)
-
-	if err := collector.wait(ctx); err != nil {
-		status := http.StatusInternalServerError
-		switch {
-		case errors.Is(err, context.DeadlineExceeded):
-			status = http.StatusGatewayTimeout
-		case errors.Is(err, context.Canceled):
-			status = http.StatusRequestTimeout
-		}
-		http.Error(w, fmt.Sprintf("collect animations: %v", err), status)
-		return
-	}
-
-	animations := collector.framesCopy()
-	response := mediaResponse{
-		Audio:      append([]byte(nil), s.audio...),
-		Animations: animations,
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(response); err != nil {
-		log.Printf("encode response: %v", err)
-	}
-}
-
-func newAnimationCollector() *animationCollector {
-	return &animationCollector{
+func newAnimationCollector() *AnimationCollector {
+	return &AnimationCollector{
 		done: make(chan struct{}),
 	}
 }
 
-func (c *animationCollector) transportFrame(data []byte, last bool) {
+func (c *AnimationCollector) transportFrame(data []byte, last bool) {
 	frameCopy := append([]byte(nil), data...)
 
 	c.mu.Lock()
@@ -221,14 +212,14 @@ func (c *animationCollector) transportFrame(data []byte, last bool) {
 	}
 }
 
-func (c *animationCollector) onError(err error) {
+func (c *AnimationCollector) onError(err error) {
 	if err == nil {
 		return
 	}
 	c.finish(fmt.Errorf("avatar session error: %w", err))
 }
 
-func (c *animationCollector) onClose() {
+func (c *AnimationCollector) onClose() {
 	c.mu.Lock()
 	last := c.last
 	c.mu.Unlock()
@@ -241,7 +232,7 @@ func (c *animationCollector) onClose() {
 	c.finish(errors.New("avatar session closed before final animation frame"))
 }
 
-func (c *animationCollector) finish(err error) {
+func (c *AnimationCollector) finish(err error) {
 	c.mu.Lock()
 	if err != nil && c.err == nil {
 		c.err = err
@@ -253,7 +244,7 @@ func (c *animationCollector) finish(err error) {
 	})
 }
 
-func (c *animationCollector) wait(ctx context.Context) error {
+func (c *AnimationCollector) wait(ctx context.Context) error {
 	select {
 	case <-c.done:
 	case <-ctx.Done():
@@ -265,7 +256,7 @@ func (c *animationCollector) wait(ctx context.Context) error {
 	return c.err
 }
 
-func (c *animationCollector) framesCopy() [][]byte {
+func (c *AnimationCollector) framesCopy() [][]byte {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 

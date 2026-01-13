@@ -34,7 +34,10 @@ func TestSessionOptionOverrides(t *testing.T) {
 		WithAvatarID("avatar-123"),
 		WithAPIKey("api-key"),
 		WithAppID("app-id"),
+		WithUseQueryAuth(true),
 		WithExpireAt(expireAt),
+		WithSampleRate(24000),
+		WithBitrate(128),
 		WithTransportFrames(frameHandler),
 		WithOnError(errorHandler),
 		WithOnClose(closeHandler),
@@ -55,8 +58,17 @@ func TestSessionOptionOverrides(t *testing.T) {
 	if cfg.AppID != "app-id" {
 		t.Fatalf("expected AppID to be set, got %q", cfg.AppID)
 	}
+	if !cfg.UseQueryAuth {
+		t.Fatal("expected UseQueryAuth to be true")
+	}
 	if !cfg.ExpireAt.Equal(expireAt) {
 		t.Fatalf("expected ExpireAt to be %v, got %v", expireAt, cfg.ExpireAt)
+	}
+	if cfg.SampleRate != 24000 {
+		t.Fatalf("expected SampleRate to be 24000, got %d", cfg.SampleRate)
+	}
+	if cfg.Bitrate != 128 {
+		t.Fatalf("expected Bitrate to be 128, got %d", cfg.Bitrate)
 	}
 	if cfg.ConsoleEndpointURL != "https://console.test" {
 		t.Fatalf("expected ConsoleEndpointURL to be set, got %q", cfg.ConsoleEndpointURL)
@@ -101,6 +113,15 @@ func TestSessionOptionDefaults(t *testing.T) {
 	}
 	if cfg.OnClose == nil {
 		t.Fatal("default OnClose should be non-nil")
+	}
+	if cfg.SampleRate != 16000 {
+		t.Fatalf("expected default SampleRate to be 16000, got %d", cfg.SampleRate)
+	}
+	if cfg.Bitrate != 0 {
+		t.Fatalf("expected default Bitrate to be 0, got %d", cfg.Bitrate)
+	}
+	if cfg.UseQueryAuth {
+		t.Fatal("expected default UseQueryAuth to be false")
 	}
 
 	// Ensure default handlers do not panic.
