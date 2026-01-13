@@ -128,6 +128,7 @@ func TestAvatarSessionStartSuccess(t *testing.T) {
 
 	var receivedAvatarID string
 	var receivedSessionKey string
+	var receivedAppID string
 	var serverConn *websocket.Conn
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -136,12 +137,45 @@ func TestAvatarSessionStartSuccess(t *testing.T) {
 		}
 		receivedAvatarID = r.URL.Query().Get("id")
 		receivedSessionKey = r.Header.Get("X-Session-Key")
+		receivedAppID = r.Header.Get("X-App-ID")
 
 		conn, err := upgrader.Upgrade(w, r, nil)
 		if err != nil {
 			t.Fatalf("failed to upgrade connection: %v", err)
 		}
 		serverConn = conn
+
+		// v2 handshake: read ClientConfigureSession, send ServerConfirmSession
+		go func() {
+			messageType, payload, err := conn.ReadMessage()
+			if err != nil {
+				return
+			}
+			if messageType != websocket.BinaryMessage {
+				return
+			}
+
+			var envelope message.Message
+			if err := proto.Unmarshal(payload, &envelope); err != nil {
+				return
+			}
+
+			if envelope.GetType() != message.MessageType_MESSAGE_CLIENT_CONFIGURE_SESSION {
+				return
+			}
+
+			// Send ServerConfirmSession
+			confirmMsg := &message.Message{
+				Type: message.MessageType_MESSAGE_SERVER_CONFIRM_SESSION,
+				Data: &message.Message_ServerConfirmSession{
+					ServerConfirmSession: &message.ServerConfirmSession{
+						ConnectionId: "conn-id-123",
+					},
+				},
+			}
+			confirmData, _ := proto.Marshal(confirmMsg)
+			_ = conn.WriteMessage(websocket.BinaryMessage, confirmData)
+		}()
 	}))
 	defer server.Close()
 	defer func() {
@@ -152,12 +186,13 @@ func TestAvatarSessionStartSuccess(t *testing.T) {
 
 	session := NewAvatarSession(
 		WithAvatarID("avatar-123"),
+		WithAppID("app-123"),
 		WithIngressEndpointURL(strings.Replace(server.URL, "http", "ws", 1)),
 	)
 
 	session.sessionToken = "session-token-123"
 
-	_, err := session.Start(context.Background())
+	connectionID, err := session.Start(context.Background())
 	if err != nil {
 		t.Fatalf("Start returned error: %v", err)
 	}
@@ -167,6 +202,12 @@ func TestAvatarSessionStartSuccess(t *testing.T) {
 	}
 	if receivedSessionKey != "session-token-123" {
 		t.Fatalf("expected X-Session-Key header, got %q", receivedSessionKey)
+	}
+	if receivedAppID != "app-123" {
+		t.Fatalf("expected X-App-ID header, got %q", receivedAppID)
+	}
+	if connectionID != "conn-id-123" {
+		t.Fatalf("expected connection ID from handshake, got %q", connectionID)
 	}
 	if session.conn == nil {
 		t.Fatal("expected websocket connection to be established")
@@ -183,6 +224,7 @@ func TestAvatarSessionStartSuccess(t *testing.T) {
 func TestAvatarSessionStartMissingToken(t *testing.T) {
 	session := NewAvatarSession(
 		WithAvatarID("avatar-123"),
+		WithAppID("app-123"),
 		WithIngressEndpointURL("wss://example.com"),
 	)
 
@@ -200,6 +242,7 @@ func TestAvatarSessionStartDialFailure(t *testing.T) {
 
 	session := NewAvatarSession(
 		WithAvatarID("avatar-123"),
+		WithAppID("app-123"),
 		WithIngressEndpointURL(strings.Replace(server.URL, "http", "ws", 1)),
 	)
 	session.sessionToken = "session-token-123"
@@ -208,8 +251,22 @@ func TestAvatarSessionStartDialFailure(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected Start to return error on dial failure")
 	}
-	if !strings.Contains(err.Error(), "unauthorized") {
-		t.Fatalf("expected error to include server response, got %v", err)
+	// v2 maps 401 to sessionTokenExpired error code
+	if !strings.Contains(err.Error(), "sessionTokenExpired") {
+		t.Fatalf("expected error to include sessionTokenExpired code, got %v", err)
+	}
+}
+
+func TestAvatarSessionStartMissingAppID(t *testing.T) {
+	session := NewAvatarSession(
+		WithAvatarID("avatar-123"),
+		WithIngressEndpointURL("wss://example.com"),
+	)
+	session.sessionToken = "session-token-123"
+
+	_, err := session.Start(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "missing app ID") {
+		t.Fatalf("expected missing app ID error, got %v", err)
 	}
 }
 

@@ -7,9 +7,10 @@ type SessionConfig struct {
 	AvatarID           string
 	APIKey             string
 	AppID              string
+	UseQueryAuth       bool // If true, send app/session credentials as URL query params (web-style auth). If false (default), send them as headers (mobile-style auth).
 	ExpireAt           time.Time
-	SampleRate         int64
-	SampleWidth        int64
+	SampleRate         int
+	Bitrate            int
 	TransportFrames    func([]byte, bool)
 	OnError            func(error)
 	OnClose            func()
@@ -26,7 +27,7 @@ func defaultSessionConfig() *SessionConfig {
 		OnError:         func(error) {},
 		OnClose:         func() {},
 		SampleRate:      16000,
-		SampleWidth:     2,
+		Bitrate:         0,
 	}
 }
 
@@ -51,10 +52,31 @@ func WithAppID(appID string) SessionOption {
 	}
 }
 
+// WithUseQueryAuth chooses whether websocket auth is sent via URL query params (web) or headers (mobile).
+func WithUseQueryAuth(useQueryAuth bool) SessionOption {
+	return func(cfg *SessionConfig) {
+		cfg.UseQueryAuth = useQueryAuth
+	}
+}
+
 // WithExpireAt sets the expiration time of the session.
 func WithExpireAt(expireAt time.Time) SessionOption {
 	return func(cfg *SessionConfig) {
 		cfg.ExpireAt = expireAt
+	}
+}
+
+// WithSampleRate sets the audio sample rate in Hz.
+func WithSampleRate(sampleRate int) SessionOption {
+	return func(cfg *SessionConfig) {
+		cfg.SampleRate = sampleRate
+	}
+}
+
+// WithBitrate sets the audio bitrate (if applicable to the selected audio format).
+func WithBitrate(bitrate int) SessionOption {
+	return func(cfg *SessionConfig) {
+		cfg.Bitrate = bitrate
 	}
 }
 

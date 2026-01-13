@@ -24,13 +24,11 @@ const (
 
 // AvatarSession represents an active avatar session configured via SessionOptions.
 type AvatarSession struct {
-	config           *SessionConfig
-	sessionToken     string
-	conn             *websocket.Conn
-	sendDuration     time.Duration
-	expectedSegments int
-	receivedSegments int
-	currentReqID     string
+	config       *SessionConfig
+	sessionToken string
+	conn         *websocket.Conn
+	currentReqID string
+	connectionID string
 }
 
 // NewAvatarSession creates a new AvatarSession using the provided SessionOptions.
@@ -120,6 +118,8 @@ func (s *AvatarSession) Init(ctx context.Context) error {
 	return nil
 }
 
+// Start establishes WebSocket connection to the ingress endpoint and performs v2 handshake.
+// Returns the connection ID for tracking this session.
 func (s *AvatarSession) Start(ctx context.Context) (string, error) {
 	if s == nil {
 		return "", errors.New("start avatar session: session is nil")
@@ -140,6 +140,9 @@ func (s *AvatarSession) Start(ctx context.Context) (string, error) {
 	}
 	if cfg.AvatarID == "" {
 		return "", errors.New("start avatar session: missing avatar ID")
+	}
+	if cfg.AppID == "" {
+		return "", errors.New("start avatar session: missing app ID")
 	}
 
 	endpoint := strings.TrimRight(cfg.IngressEndpointURL, "/") + ingressWebSocketPath
@@ -164,24 +167,31 @@ func (s *AvatarSession) Start(ctx context.Context) (string, error) {
 
 	q := u.Query()
 	q.Set("id", cfg.AvatarID)
-	u.RawQuery = q.Encode()
 
+	// v2 auth: mobile uses headers; web uses query params.
 	headers := http.Header{}
-	headers.Set("X-Session-Key", s.sessionToken)
-
-	connectionId, err := GenerateLogID()
-	if err != nil {
-		return "", fmt.Errorf("start avatar session: generate connection id: %w", err)
+	if cfg.UseQueryAuth {
+		q.Set("appId", cfg.AppID)
+		q.Set("sessionKey", s.sessionToken)
+	} else {
+		headers.Set("X-App-ID", cfg.AppID)
+		headers.Set("X-Session-Key", s.sessionToken)
 	}
 
-	headers.Set("X-Connection-Id", connectionId)
+	u.RawQuery = q.Encode()
 
 	conn, resp, err := websocket.DefaultDialer.DialContext(ctx, u.String(), headers)
 	if err != nil {
-		if resp != nil && resp.Body != nil {
-			defer resp.Body.Close() // nolint:errcheck
-			if body, readErr := io.ReadAll(io.LimitReader(resp.Body, 4096)); readErr == nil && len(body) > 0 {
-				return "", fmt.Errorf("start avatar session: dial websocket failed with code %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+		if resp != nil {
+			// Map HTTP status to SDK error code
+			if code := mapWSConnectErrorToCode(resp.StatusCode); code != nil {
+				return "", NewAvatarSDKError(*code, fmt.Sprintf("WebSocket auth failed (HTTP %d)", resp.StatusCode))
+			}
+			if resp.Body != nil {
+				defer resp.Body.Close() // nolint:errcheck
+				if body, readErr := io.ReadAll(io.LimitReader(resp.Body, 4096)); readErr == nil && len(body) > 0 {
+					return "", fmt.Errorf("start avatar session: dial websocket failed with code %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+				}
 			}
 		}
 		return "", fmt.Errorf("start avatar session: dial websocket: %w", err)
@@ -189,18 +199,115 @@ func (s *AvatarSession) Start(ctx context.Context) (string, error) {
 
 	s.conn = conn
 
+	// v2 handshake:
+	// 1) client sends ClientConfigureSession
+	// 2) server responds with ServerConfirmSession (connection_id) OR ServerError
+	if err := s.sendClientConfigureSession(); err != nil {
+		_ = conn.Close()
+		s.conn = nil
+		return "", err
+	}
+
+	connectionID, err := s.awaitServerConfirmSession(ctx)
+	if err != nil {
+		_ = conn.Close()
+		s.conn = nil
+		return "", err
+	}
+
+	s.connectionID = connectionID
+
+	// Start read loop in background
 	go s.readLoop(ctx)
 
-	return connectionId, nil
+	return connectionID, nil
 }
 
-// Currently, we only support 16kHz mono 16-bit PCM audio.
+// sendClientConfigureSession sends the v2 handshake configuration message.
+func (s *AvatarSession) sendClientConfigureSession() error {
+	if s.conn == nil {
+		return errors.New("websocket connection is not established")
+	}
+
+	msg := &message.Message{
+		Type: message.MessageType_MESSAGE_CLIENT_CONFIGURE_SESSION,
+		Data: &message.Message_ClientConfigureSession{
+			ClientConfigureSession: &message.ClientConfigureSession{
+				SampleRate:           int32(s.config.SampleRate),
+				Bitrate:              int32(s.config.Bitrate),
+				AudioFormat:          message.AudioFormat_AUDIO_FORMAT_PCM_S16LE,
+				TransportCompression: message.TransportCompression_TRANSPORT_COMPRESSION_NONE,
+			},
+		},
+	}
+
+	data, err := proto.Marshal(msg)
+	if err != nil {
+		return fmt.Errorf("start avatar session: marshal configure session message: %w", err)
+	}
+
+	if err := s.conn.WriteMessage(websocket.BinaryMessage, data); err != nil {
+		return fmt.Errorf("start avatar session: send configure session message: %w", err)
+	}
+
+	return nil
+}
+
+// awaitServerConfirmSession waits for the server's handshake response.
+func (s *AvatarSession) awaitServerConfirmSession(ctx context.Context) (string, error) {
+	if s.conn == nil {
+		return "", errors.New("websocket connection is not established")
+	}
+
+	// Set read deadline based on context
+	if deadline, ok := ctx.Deadline(); ok {
+		if err := s.conn.SetReadDeadline(deadline); err != nil {
+			return "", fmt.Errorf("start avatar session: set read deadline: %w", err)
+		}
+		defer s.conn.SetReadDeadline(time.Time{}) // nolint:errcheck
+	}
+
+	messageType, payload, err := s.conn.ReadMessage()
+	if err != nil {
+		return "", fmt.Errorf("start avatar session: failed during websocket handshake: %w", err)
+	}
+
+	if messageType != websocket.BinaryMessage {
+		return "", errors.New("start avatar session: failed during websocket handshake: expected binary protobuf message")
+	}
+
+	var envelope message.Message
+	if err := proto.Unmarshal(payload, &envelope); err != nil {
+		return "", fmt.Errorf("start avatar session: failed during websocket handshake: invalid protobuf payload: %w", err)
+	}
+
+	switch envelope.GetType() {
+	case message.MessageType_MESSAGE_SERVER_CONFIRM_SESSION:
+		confirm := envelope.GetServerConfirmSession()
+		if confirm == nil || confirm.GetConnectionId() == "" {
+			return "", errors.New("start avatar session: handshake succeeded but server_confirm_session.connection_id is empty")
+		}
+		return confirm.GetConnectionId(), nil
+
+	case message.MessageType_MESSAGE_SERVER_ERROR:
+		serverErr := envelope.GetServerError()
+		if serverErr == nil {
+			return "", errors.New("start avatar session: ServerError during handshake (missing payload)")
+		}
+		return "", fmt.Errorf("start avatar session: ServerError during handshake (connection_id=%s, req_id=%s, code=%d): %s",
+			serverErr.GetConnectionId(), serverErr.GetReqId(), serverErr.GetCode(), serverErr.GetMessage())
+
+	default:
+		return "", fmt.Errorf("start avatar session: unexpected message during handshake: type=%v", envelope.GetType())
+	}
+}
+
+// SendAudio sends audio data to the server.
+// Currently supports 16kHz mono 16-bit PCM audio by default.
 func (s *AvatarSession) SendAudio(audio []byte, end bool) (string, error) {
 	if s.conn == nil {
 		return "", errors.New("send audio: websocket connection is not established")
 	}
-
-	s.sendDuration += time.Duration(len(audio)) * time.Second / time.Duration(s.config.SampleRate*s.config.SampleWidth)
 
 	var err error
 	if s.currentReqID == "" {
@@ -210,13 +317,13 @@ func (s *AvatarSession) SendAudio(audio []byte, end bool) (string, error) {
 		}
 	}
 
-	reqId := s.currentReqID
+	reqID := s.currentReqID
 
 	msg := &message.Message{
 		Type: message.MessageType_MESSAGE_CLIENT_AUDIO_INPUT,
 		Data: &message.Message_ClientAudioInput{
-			ClientAudioInput: &message.ClientAudioInputData{
-				ReqId: reqId,
+			ClientAudioInput: &message.ClientAudioInput{
+				ReqId: reqID,
 				Audio: audio,
 				End:   end,
 			},
@@ -233,17 +340,13 @@ func (s *AvatarSession) SendAudio(audio []byte, end bool) (string, error) {
 	}
 
 	if end {
-		if s.sendDuration.Seconds() < 2 {
-			s.expectedSegments = 1
-		} else {
-			s.expectedSegments = int((s.sendDuration.Seconds()-2)/4) + 2
-		}
 		s.currentReqID = ""
 	}
 
-	return reqId, nil
+	return reqID, nil
 }
 
+// Close closes the WebSocket connection and cleans up resources.
 func (s *AvatarSession) Close() error {
 	if s == nil {
 		return nil
@@ -252,6 +355,7 @@ func (s *AvatarSession) Close() error {
 		err := s.conn.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
 		if err != nil {
 			_ = s.conn.Close()
+			s.conn = nil
 			return fmt.Errorf("close avatar session: send close message: %w", err)
 		}
 		err = s.conn.Close()
@@ -261,7 +365,7 @@ func (s *AvatarSession) Close() error {
 		}
 		s.conn = nil
 	}
-	if s.config.OnClose != nil {
+	if s.config != nil && s.config.OnClose != nil {
 		go s.config.OnClose()
 	}
 	return nil
@@ -323,7 +427,7 @@ func (s *AvatarSession) readLoop(ctx context.Context) {
 				return
 			}
 
-			if cfg != nil {
+			if cfg != nil && cfg.OnError != nil {
 				asyncErr := fmt.Errorf("avatar session read loop: read message: %w", err)
 				go cfg.OnError(asyncErr)
 			}
@@ -338,7 +442,7 @@ func (s *AvatarSession) readLoop(ctx context.Context) {
 
 		var envelope message.Message
 		if err := proto.Unmarshal(payload, &envelope); err != nil {
-			if cfg != nil {
+			if cfg != nil && cfg.OnError != nil {
 				asyncErr := fmt.Errorf("avatar session read loop: decode message: %w", err)
 				go cfg.OnError(asyncErr)
 			}
@@ -349,24 +453,19 @@ func (s *AvatarSession) readLoop(ctx context.Context) {
 		case message.MessageType_MESSAGE_SERVER_RESPONSE_ANIMATION:
 			if cfg != nil && cfg.TransportFrames != nil {
 				frame := append([]byte(nil), payload...)
-				s.receivedSegments++
-				last := false
-				if s.receivedSegments == s.expectedSegments {
-					last = true
-					s.receivedSegments = 0
-					s.expectedSegments = 0
-					s.sendDuration = 0
-				}
+				anim := envelope.GetServerResponseAnimation()
+				last := anim != nil && anim.GetEnd()
 				go cfg.TransportFrames(frame, last)
 			}
-		case message.MessageType_MESSAGE_ERROR:
+		case message.MessageType_MESSAGE_SERVER_ERROR:
 			if cfg != nil && cfg.OnError != nil {
-				errInfo := envelope.GetError()
-				if errInfo == nil {
+				serverErr := envelope.GetServerError()
+				if serverErr == nil {
 					go cfg.OnError(errors.New("avatar session read loop: error message missing payload"))
 					continue
 				}
-				report := fmt.Errorf("avatar session error (req_id=%s, code=%d): %s", errInfo.GetReqId(), errInfo.GetCode(), errInfo.GetReason())
+				report := fmt.Errorf("avatar session error (connection_id=%s, req_id=%s, code=%d): %s",
+					serverErr.GetConnectionId(), serverErr.GetReqId(), serverErr.GetCode(), serverErr.GetMessage())
 				go cfg.OnError(report)
 			}
 		}

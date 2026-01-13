@@ -37,11 +37,12 @@ func TestAvatarSessionInitEndToEnd(t *testing.T) {
 }
 
 // TestAvatarSessionStartEndToEnd performs an integration call against the real ingress websocket.
-// It requires the environment variables AVATAR_API_KEY, AVATAR_CONSOLE_ENDPOINT, AVATAR_INGRESS_ENDPOINT,
-// and AVATAR_SESSION_AVATAR_ID to be set. The ingress endpoint should be the base URL that hosts the
-// websocket endpoint (without the /websocket suffix).
+// It requires the environment variables AVATAR_API_KEY, AVATAR_APP_ID, AVATAR_CONSOLE_ENDPOINT,
+// AVATAR_INGRESS_ENDPOINT, and AVATAR_SESSION_AVATAR_ID to be set. The ingress endpoint should
+// be the base URL that hosts the websocket endpoint (without the /websocket suffix).
 func TestAvatarSessionStartEndToEnd(t *testing.T) {
 	apiKey := envOrSkip(t, "AVATAR_API_KEY")
+	appID := envOrSkip(t, "AVATAR_APP_ID")
 	consoleEndpoint := envOrSkip(t, "AVATAR_CONSOLE_ENDPOINT")
 	ingressEndpoint := envOrSkip(t, "AVATAR_INGRESS_ENDPOINT")
 	avatarID := envOrSkip(t, "AVATAR_SESSION_AVATAR_ID")
@@ -50,6 +51,7 @@ func TestAvatarSessionStartEndToEnd(t *testing.T) {
 
 	session := NewAvatarSession(
 		WithAPIKey(apiKey),
+		WithAppID(appID),
 		WithConsoleEndpointURL(consoleEndpoint),
 		WithIngressEndpointURL(ingressEndpoint),
 		WithAvatarID(avatarID),
@@ -88,6 +90,7 @@ func TestAvatarSessionStartEndToEnd(t *testing.T) {
 
 func TestAvatarSessionEndToEnd(t *testing.T) {
 	apiKey := envOrSkip(t, "AVATAR_API_KEY")
+	appID := envOrSkip(t, "AVATAR_APP_ID")
 	consoleEndpoint := envOrSkip(t, "AVATAR_CONSOLE_ENDPOINT")
 	ingressEndpoint := envOrSkip(t, "AVATAR_INGRESS_ENDPOINT")
 	avatarID := envOrSkip(t, "AVATAR_SESSION_AVATAR_ID")
@@ -100,6 +103,7 @@ func TestAvatarSessionEndToEnd(t *testing.T) {
 
 	session := NewAvatarSession(
 		WithAPIKey(apiKey),
+		WithAppID(appID),
 		WithConsoleEndpointURL(consoleEndpoint),
 		WithIngressEndpointURL(ingressEndpoint),
 		WithAvatarID(avatarID),
