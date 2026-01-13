@@ -69,9 +69,24 @@ func main() {
 	mux.HandleFunc("/media", server.handleMedia)
 
 	log.Printf("listening on %s", cfg.ListenAddr)
-	if err := http.ListenAndServe(cfg.ListenAddr, mux); err != nil {
+	if err := http.ListenAndServe(cfg.ListenAddr, enableCORS(mux)); err != nil {
 		log.Fatalf("server error: %v", err)
 	}
+}
+
+func enableCORS(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+
+		if r.Method == "OPTIONS" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+
+		next.ServeHTTP(w, r)
+	})
 }
 
 func loadConfig() (*serverConfig, error) {
