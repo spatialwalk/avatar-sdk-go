@@ -229,15 +229,29 @@ func (s *AvatarSession) sendClientConfigureSession() error {
 		return errors.New("websocket connection is not established")
 	}
 
+	clientConfig := &message.ClientConfigureSession{
+		SampleRate:           int32(s.config.SampleRate),
+		Bitrate:              int32(s.config.Bitrate),
+		AudioFormat:          message.AudioFormat_AUDIO_FORMAT_PCM_S16LE,
+		TransportCompression: message.TransportCompression_TRANSPORT_COMPRESSION_NONE,
+	}
+
+	// Add LiveKit egress configuration if provided
+	if s.config.LiveKitEgress != nil {
+		clientConfig.EgressType = message.EgressType_EGRESS_TYPE_LIVEKIT
+		clientConfig.LivekitEgress = &message.LiveKitEgressConfig{
+			Url:         s.config.LiveKitEgress.URL,
+			ApiKey:      s.config.LiveKitEgress.APIKey,
+			ApiSecret:   s.config.LiveKitEgress.APISecret,
+			RoomName:    s.config.LiveKitEgress.RoomName,
+			PublisherId: s.config.LiveKitEgress.PublisherID,
+		}
+	}
+
 	msg := &message.Message{
 		Type: message.MessageType_MESSAGE_CLIENT_CONFIGURE_SESSION,
 		Data: &message.Message_ClientConfigureSession{
-			ClientConfigureSession: &message.ClientConfigureSession{
-				SampleRate:           int32(s.config.SampleRate),
-				Bitrate:              int32(s.config.Bitrate),
-				AudioFormat:          message.AudioFormat_AUDIO_FORMAT_PCM_S16LE,
-				TransportCompression: message.TransportCompression_TRANSPORT_COMPRESSION_NONE,
-			},
+			ClientConfigureSession: clientConfig,
 		},
 	}
 

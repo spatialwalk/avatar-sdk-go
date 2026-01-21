@@ -16,6 +16,21 @@ type SessionConfig struct {
 	OnClose            func()
 	ConsoleEndpointURL string
 	IngressEndpointURL string
+	LiveKitEgress      *LiveKitEgressConfig // If set, enables LiveKit egress mode - audio and animation are streamed to a LiveKit room via the egress service
+}
+
+// LiveKitEgressConfig contains configuration for streaming to a LiveKit room.
+type LiveKitEgressConfig struct {
+	// URL is the LiveKit server URL (e.g., wss://livekit.example.com)
+	URL string
+	// APIKey is the LiveKit API key
+	APIKey string
+	// APISecret is the LiveKit API secret
+	APISecret string
+	// RoomName is the LiveKit room name to join
+	RoomName string
+	// PublisherID is the publisher identity in the room
+	PublisherID string
 }
 
 // SessionOption applies a configuration change to SessionConfig.
@@ -124,5 +139,14 @@ func WithConsoleEndpointURL(endpointURL string) SessionOption {
 func WithIngressEndpointURL(endpointURL string) SessionOption {
 	return func(cfg *SessionConfig) {
 		cfg.IngressEndpointURL = endpointURL
+	}
+}
+
+// WithLiveKitEgress enables LiveKit egress mode for the session.
+// When set, audio and animation data are streamed to a LiveKit room via the egress service
+// instead of being returned through the WebSocket connection.
+func WithLiveKitEgress(config *LiveKitEgressConfig) SessionOption {
+	return func(cfg *SessionConfig) {
+		cfg.LiveKitEgress = config
 	}
 }

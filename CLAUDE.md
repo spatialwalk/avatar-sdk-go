@@ -59,6 +59,29 @@ Callbacks execute in separate goroutines to avoid blocking the read loop.
 - **Mobile (default)**: `X-App-ID` and `X-Session-Key` headers
 - **Web**: `appId` and `sessionKey` query params (enable with `WithUseQueryAuth(true)`)
 
+### LiveKit Egress Mode
+
+When configured with `WithLiveKitEgress(config)`, audio and animation data are streamed to a LiveKit room via the egress service instead of being returned through the WebSocket connection. The egress configuration is sent via the `ClientConfigureSession` proto message.
+
+To use LiveKit egress mode:
+1. Configure the session with `WithLiveKitEgress(&LiveKitEgressConfig{...})`
+2. Provide LiveKit connection details: URL, API key, API secret, room name, and publisher ID
+3. The server will create an egress connection and stream output to the LiveKit room
+4. The `TransportFrames` callback will not be invoked since data goes to LiveKit
+
+```go
+session := NewAvatarSession(
+    WithLiveKitEgress(&LiveKitEgressConfig{
+        URL:         "wss://livekit.example.com",
+        APIKey:      "your-api-key",
+        APISecret:   "your-api-secret",
+        RoomName:    "room-name",
+        PublisherID: "publisher-id",
+    }),
+    // ... other options
+)
+```
+
 ## Environment Variables (for examples)
 
 ```bash

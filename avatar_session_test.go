@@ -561,6 +561,102 @@ func TestAvatarSessionStartWithQueryAuth(t *testing.T) {
 	_ = session.Close()
 }
 
+func TestAvatarSessionStartWithLiveKitEgress(t *testing.T) {
+	upgrader := websocket.Upgrader{
+		CheckOrigin: func(r *http.Request) bool { return true },
+	}
+
+	var receivedEgressConfig *message.LiveKitEgressConfig
+	var receivedEgressType message.EgressType
+	var serverConn *websocket.Conn
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		serverConn = conn
+
+		// v2 handshake - read ClientConfigureSession and extract egress config
+		go func() {
+			messageType, payload, err := conn.ReadMessage()
+			if err != nil || messageType != websocket.BinaryMessage {
+				return
+			}
+
+			var envelope message.Message
+			if err := proto.Unmarshal(payload, &envelope); err != nil {
+				return
+			}
+
+			if envelope.GetType() == message.MessageType_MESSAGE_CLIENT_CONFIGURE_SESSION {
+				clientConfig := envelope.GetClientConfigureSession()
+				if clientConfig != nil {
+					receivedEgressType = clientConfig.GetEgressType()
+					receivedEgressConfig = clientConfig.GetLivekitEgress()
+				}
+			}
+
+			confirmMsg := &message.Message{
+				Type: message.MessageType_MESSAGE_SERVER_CONFIRM_SESSION,
+				Data: &message.Message_ServerConfirmSession{
+					ServerConfirmSession: &message.ServerConfirmSession{
+						ConnectionId: "conn-id-egress",
+					},
+				},
+			}
+			confirmData, _ := proto.Marshal(confirmMsg)
+			_ = conn.WriteMessage(websocket.BinaryMessage, confirmData)
+		}()
+	}))
+	defer server.Close()
+	defer func() {
+		if serverConn != nil {
+			_ = serverConn.Close()
+		}
+	}()
+
+	session := NewAvatarSession(
+		WithAvatarID("avatar-123"),
+		WithAppID("app-123"),
+		WithLiveKitEgress(&LiveKitEgressConfig{
+			URL:         "wss://livekit.example.com",
+			APIKey:      "lk-api-key",
+			APISecret:   "lk-api-secret",
+			RoomName:    "test-room",
+			PublisherID: "publisher-123",
+		}),
+		WithIngressEndpointURL(strings.Replace(server.URL, "http", "ws", 1)),
+	)
+	session.sessionToken = "session-token-123"
+
+	connectionID, err := session.Start(context.Background())
+	if err != nil {
+		t.Fatalf("Start returned error: %v", err)
+	}
+
+	if receivedEgressType != message.EgressType_EGRESS_TYPE_LIVEKIT {
+		t.Fatalf("expected egress_type to be EGRESS_TYPE_LIVEKIT, got %v", receivedEgressType)
+	}
+	if receivedEgressConfig == nil {
+		t.Fatal("expected livekit_egress config to be set")
+	}
+	if receivedEgressConfig.GetUrl() != "wss://livekit.example.com" {
+		t.Fatalf("expected livekit_egress.url to be 'wss://livekit.example.com', got %q", receivedEgressConfig.GetUrl())
+	}
+	if receivedEgressConfig.GetRoomName() != "test-room" {
+		t.Fatalf("expected livekit_egress.room_name to be 'test-room', got %q", receivedEgressConfig.GetRoomName())
+	}
+	if receivedEgressConfig.GetPublisherId() != "publisher-123" {
+		t.Fatalf("expected livekit_egress.publisher_id to be 'publisher-123', got %q", receivedEgressConfig.GetPublisherId())
+	}
+	if connectionID != "conn-id-egress" {
+		t.Fatalf("expected connection ID, got %q", connectionID)
+	}
+
+	_ = session.Close()
+}
+
 func TestAvatarSessionStartHandshakeServerError(t *testing.T) {
 	upgrader := websocket.Upgrader{
 		CheckOrigin: func(r *http.Request) bool { return true },

@@ -43,6 +43,13 @@ func TestSessionOptionOverrides(t *testing.T) {
 		WithOnClose(closeHandler),
 		WithConsoleEndpointURL("https://console.test"),
 		WithIngressEndpointURL("https://ingress.test"),
+		WithLiveKitEgress(&LiveKitEgressConfig{
+			URL:         "wss://livekit.example.com",
+			APIKey:      "api-key",
+			APISecret:   "api-secret",
+			RoomName:    "test-room",
+			PublisherID: "publisher-123",
+		}),
 	}
 
 	for _, opt := range opts {
@@ -75,6 +82,15 @@ func TestSessionOptionOverrides(t *testing.T) {
 	}
 	if cfg.IngressEndpointURL != "https://ingress.test" {
 		t.Fatalf("expected IngressEndpointURL to be set, got %q", cfg.IngressEndpointURL)
+	}
+	if cfg.LiveKitEgress == nil {
+		t.Fatal("expected LiveKitEgress to be set")
+	}
+	if cfg.LiveKitEgress.URL != "wss://livekit.example.com" {
+		t.Fatalf("expected LiveKitEgress.URL to be set, got %q", cfg.LiveKitEgress.URL)
+	}
+	if cfg.LiveKitEgress.RoomName != "test-room" {
+		t.Fatalf("expected LiveKitEgress.RoomName to be set, got %q", cfg.LiveKitEgress.RoomName)
 	}
 
 	if cfg.TransportFrames == nil {
@@ -122,6 +138,9 @@ func TestSessionOptionDefaults(t *testing.T) {
 	}
 	if cfg.UseQueryAuth {
 		t.Fatal("expected default UseQueryAuth to be false")
+	}
+	if cfg.LiveKitEgress != nil {
+		t.Fatal("expected default LiveKitEgress to be nil")
 	}
 
 	// Ensure default handlers do not panic.
