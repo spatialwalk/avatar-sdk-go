@@ -11,6 +11,7 @@ enum MessageType {
   MESSAGE_CLIENT_AUDIO_INPUT = 3;
   MESSAGE_SERVER_ERROR = 4;
   MESSAGE_SERVER_RESPONSE_ANIMATION = 5;
+  MESSAGE_CLIENT_INTERRUPT = 7; // 打断
 }
 
 enum AudioFormat {
@@ -76,6 +77,10 @@ message ServerResponseAnimation {
   bool end = 3;
 }
 
+message ClientInterrupt {
+  string req_id = 1;
+}
+
 message Message {
   MessageType type = 1;
   oneof data {
@@ -84,5 +89,6 @@ message Message {
     ClientAudioInput client_audio_input = 4;
     ServerError server_error = 5;
     ServerResponseAnimation server_response_animation = 6;
+    ClientInterrupt client_interrupt = 7;
   }
 }
