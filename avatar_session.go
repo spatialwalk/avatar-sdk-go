@@ -28,6 +28,7 @@ type AvatarSession struct {
 	sessionToken string
 	conn         *websocket.Conn
 	currentReqID string
+	lastReqID    string // tracks the most recent request ID for interrupt
 	connectionID string
 }
 
@@ -329,6 +330,7 @@ func (s *AvatarSession) SendAudio(audio []byte, end bool) (string, error) {
 		if err != nil {
 			return "", fmt.Errorf("send audio: generate request id: %w", err)
 		}
+		s.lastReqID = s.currentReqID
 	}
 
 	reqID := s.currentReqID
@@ -356,6 +358,43 @@ func (s *AvatarSession) SendAudio(audio []byte, end bool) (string, error) {
 	if end {
 		s.currentReqID = ""
 	}
+
+	return reqID, nil
+}
+
+// Interrupt sends an interrupt signal to stop the current audio processing.
+// Returns the request ID that was interrupted, or empty string if no request was active.
+func (s *AvatarSession) Interrupt() (string, error) {
+	if s.conn == nil {
+		return "", errors.New("interrupt: websocket connection is not established")
+	}
+
+	// Use lastReqID which tracks the most recent request, even after end=true
+	reqID := s.lastReqID
+	if reqID == "" {
+		return "", errors.New("interrupt: no request to interrupt")
+	}
+
+	msg := &message.Message{
+		Type: message.MessageType_MESSAGE_CLIENT_INTERRUPT,
+		Data: &message.Message_ClientInterrupt{
+			ClientInterrupt: &message.ClientInterrupt{
+				ReqId: reqID,
+			},
+		},
+	}
+
+	data, err := proto.Marshal(msg)
+	if err != nil {
+		return "", fmt.Errorf("interrupt: marshal message: %w", err)
+	}
+
+	if err := s.conn.WriteMessage(websocket.BinaryMessage, data); err != nil {
+		return "", fmt.Errorf("interrupt: write message: %w", err)
+	}
+
+	// Clear current request ID so next SendAudio creates a new one
+	s.currentReqID = ""
 
 	return reqID, nil
 }
