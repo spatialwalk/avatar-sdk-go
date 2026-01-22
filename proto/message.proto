@@ -89,6 +89,6 @@ message Message {
     ClientAudioInput client_audio_input = 4;
     ServerError server_error = 5;
     ServerResponseAnimation server_response_animation = 6;
-    ClientInterrupt client_interrupt = 7;
+    ClientInterrupt client_interrupt = 8;
   }
 }
