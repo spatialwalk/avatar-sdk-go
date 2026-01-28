@@ -17,6 +17,7 @@ type SessionConfig struct {
 	ConsoleEndpointURL string
 	IngressEndpointURL string
 	LiveKitEgress      *LiveKitEgressConfig // If set, enables LiveKit egress mode - audio and animation are streamed to a LiveKit room via the egress service
+	AgoraEgress        *AgoraEgressConfig   // If set, enables Agora egress mode - audio and animation are streamed to an Agora channel via the egress service
 }
 
 // LiveKitEgressConfig contains configuration for streaming to a LiveKit room.
@@ -30,6 +31,18 @@ type LiveKitEgressConfig struct {
 	// RoomName is the LiveKit room name to join
 	RoomName string
 	// PublisherID is the publisher identity in the room
+	PublisherID string
+}
+
+// AgoraEgressConfig contains configuration for streaming to an Agora channel.
+type AgoraEgressConfig struct {
+	// ChannelName is the Agora channel name to join
+	ChannelName string
+	// Token is the Agora token for authentication (optional for testing)
+	Token string
+	// UID is the publisher UID in the channel (0 for auto-assign)
+	UID uint32
+	// PublisherID is the publisher identity/name
 	PublisherID string
 }
 
@@ -148,5 +161,14 @@ func WithIngressEndpointURL(endpointURL string) SessionOption {
 func WithLiveKitEgress(config *LiveKitEgressConfig) SessionOption {
 	return func(cfg *SessionConfig) {
 		cfg.LiveKitEgress = config
+	}
+}
+
+// WithAgoraEgress enables Agora egress mode for the session.
+// When set, audio and animation data are streamed to an Agora channel via the egress service
+// instead of being returned through the WebSocket connection.
+func WithAgoraEgress(config *AgoraEgressConfig) SessionOption {
+	return func(cfg *SessionConfig) {
+		cfg.AgoraEgress = config
 	}
 }
