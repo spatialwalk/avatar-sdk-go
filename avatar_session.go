@@ -249,6 +249,17 @@ func (s *AvatarSession) sendClientConfigureSession() error {
 		}
 	}
 
+	// Add Agora egress configuration if provided
+	if s.config.AgoraEgress != nil {
+		clientConfig.EgressType = message.EgressType_EGRESS_TYPE_AGORA
+		clientConfig.AgoraEgress = &message.AgoraEgressConfig{
+			ChannelName: s.config.AgoraEgress.ChannelName,
+			Token:       s.config.AgoraEgress.Token,
+			Uid:         s.config.AgoraEgress.UID,
+			PublisherId: s.config.AgoraEgress.PublisherID,
+		}
+	}
+
 	msg := &message.Message{
 		Type: message.MessageType_MESSAGE_CLIENT_CONFIGURE_SESSION,
 		Data: &message.Message_ClientConfigureSession{
