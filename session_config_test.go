@@ -44,11 +44,13 @@ func TestSessionOptionOverrides(t *testing.T) {
 		WithConsoleEndpointURL("https://console.test"),
 		WithIngressEndpointURL("https://ingress.test"),
 		WithLiveKitEgress(&LiveKitEgressConfig{
-			URL:         "wss://livekit.example.com",
-			APIKey:      "api-key",
-			APISecret:   "api-secret",
-			RoomName:    "test-room",
-			PublisherID: "publisher-123",
+			URL:             "wss://livekit.example.com",
+			APIKey:          "api-key",
+			APISecret:       "api-secret",
+			RoomName:        "test-room",
+			PublisherID:     "publisher-123",
+			ExtraAttributes: map[string]string{"role": "avatar", "locale": "en-US"},
+			IdleTimeout:     120,
 		}),
 	}
 
@@ -91,6 +93,12 @@ func TestSessionOptionOverrides(t *testing.T) {
 	}
 	if cfg.LiveKitEgress.RoomName != "test-room" {
 		t.Fatalf("expected LiveKitEgress.RoomName to be set, got %q", cfg.LiveKitEgress.RoomName)
+	}
+	if cfg.LiveKitEgress.ExtraAttributes["role"] != "avatar" {
+		t.Fatalf("expected LiveKitEgress.ExtraAttributes.role to be 'avatar', got %q", cfg.LiveKitEgress.ExtraAttributes["role"])
+	}
+	if cfg.LiveKitEgress.IdleTimeout != 120 {
+		t.Fatalf("expected LiveKitEgress.IdleTimeout to be 120, got %d", cfg.LiveKitEgress.IdleTimeout)
 	}
 
 	if cfg.TransportFrames == nil {
