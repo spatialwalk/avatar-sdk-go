@@ -620,11 +620,13 @@ func TestAvatarSessionStartWithLiveKitEgress(t *testing.T) {
 		WithAvatarID("avatar-123"),
 		WithAppID("app-123"),
 		WithLiveKitEgress(&LiveKitEgressConfig{
-			URL:         "wss://livekit.example.com",
-			APIKey:      "lk-api-key",
-			APISecret:   "lk-api-secret",
-			RoomName:    "test-room",
-			PublisherID: "publisher-123",
+			URL:             "wss://livekit.example.com",
+			APIKey:          "lk-api-key",
+			APISecret:       "lk-api-secret",
+			RoomName:        "test-room",
+			PublisherID:     "publisher-123",
+			ExtraAttributes: map[string]string{"role": "avatar", "region": "us-west"},
+			IdleTimeout:     120,
 		}),
 		WithIngressEndpointURL(strings.Replace(server.URL, "http", "ws", 1)),
 	)
@@ -649,6 +651,15 @@ func TestAvatarSessionStartWithLiveKitEgress(t *testing.T) {
 	}
 	if receivedEgressConfig.GetPublisherId() != "publisher-123" {
 		t.Fatalf("expected livekit_egress.publisher_id to be 'publisher-123', got %q", receivedEgressConfig.GetPublisherId())
+	}
+	if receivedEgressConfig.GetExtraAttributes()["role"] != "avatar" {
+		t.Fatalf("expected livekit_egress.extra_attributes.role to be 'avatar', got %q", receivedEgressConfig.GetExtraAttributes()["role"])
+	}
+	if receivedEgressConfig.GetExtraAttributes()["region"] != "us-west" {
+		t.Fatalf("expected livekit_egress.extra_attributes.region to be 'us-west', got %q", receivedEgressConfig.GetExtraAttributes()["region"])
+	}
+	if receivedEgressConfig.GetIdleTimeout() != 120 {
+		t.Fatalf("expected livekit_egress.idle_timeout to be 120, got %d", receivedEgressConfig.GetIdleTimeout())
 	}
 	if connectionID != "conn-id-egress" {
 		t.Fatalf("expected connection ID, got %q", connectionID)

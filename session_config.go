@@ -32,6 +32,10 @@ type LiveKitEgressConfig struct {
 	RoomName string
 	// PublisherID is the publisher identity in the room
 	PublisherID string
+	// ExtraAttributes are additional key-value attributes for the LiveKit participant.
+	ExtraAttributes map[string]string
+	// IdleTimeout is the egress connection idle timeout in seconds.
+	IdleTimeout int32
 }
 
 // AgoraEgressConfig contains configuration for streaming to an Agora channel.

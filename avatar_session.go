@@ -241,11 +241,13 @@ func (s *AvatarSession) sendClientConfigureSession() error {
 	if s.config.LiveKitEgress != nil {
 		clientConfig.EgressType = message.EgressType_EGRESS_TYPE_LIVEKIT
 		clientConfig.LivekitEgress = &message.LiveKitEgressConfig{
-			Url:         s.config.LiveKitEgress.URL,
-			ApiKey:      s.config.LiveKitEgress.APIKey,
-			ApiSecret:   s.config.LiveKitEgress.APISecret,
-			RoomName:    s.config.LiveKitEgress.RoomName,
-			PublisherId: s.config.LiveKitEgress.PublisherID,
+			Url:             s.config.LiveKitEgress.URL,
+			ApiKey:          s.config.LiveKitEgress.APIKey,
+			ApiSecret:       s.config.LiveKitEgress.APISecret,
+			RoomName:        s.config.LiveKitEgress.RoomName,
+			PublisherId:     s.config.LiveKitEgress.PublisherID,
+			ExtraAttributes: s.config.LiveKitEgress.ExtraAttributes,
+			IdleTimeout:     s.config.LiveKitEgress.IdleTimeout,
 		}
 	}
 
