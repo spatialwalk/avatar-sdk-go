@@ -70,8 +70,69 @@ func TestErrorCodeConstants(t *testing.T) {
 	if ErrorCodeAppIDUnrecognized != "appIDUnrecognized" {
 		t.Fatalf("unexpected value for ErrorCodeAppIDUnrecognized: %q", ErrorCodeAppIDUnrecognized)
 	}
+	if ErrorCodeInvalidRequest != "invalidRequest" {
+		t.Fatalf("unexpected value for ErrorCodeInvalidRequest: %q", ErrorCodeInvalidRequest)
+	}
+	if ErrorCodeInvalidEgressConfig != "invalidEgressConfig" {
+		t.Fatalf("unexpected value for ErrorCodeInvalidEgressConfig: %q", ErrorCodeInvalidEgressConfig)
+	}
+	if ErrorCodeEgressUnavailable != "egressUnavailable" {
+		t.Fatalf("unexpected value for ErrorCodeEgressUnavailable: %q", ErrorCodeEgressUnavailable)
+	}
+	if ErrorCodeProtocolError != "protocolError" {
+		t.Fatalf("unexpected value for ErrorCodeProtocolError: %q", ErrorCodeProtocolError)
+	}
 	if ErrorCodeUnknown != "unknown" {
 		t.Fatalf("unexpected value for ErrorCodeUnknown: %q", ErrorCodeUnknown)
+	}
+}
+
+func TestClassifyServerErrorCode(t *testing.T) {
+	tests := []struct {
+		name       string
+		serverCode string
+		detail     string
+		want       AvatarSDKErrorCode
+	}{
+		{
+			name:       "invalid argument egress",
+			serverCode: "3",
+			detail:     "livekit egress configuration is invalid",
+			want:       ErrorCodeInvalidEgressConfig,
+		},
+		{
+			name:       "invalid argument request",
+			serverCode: "3",
+			detail:     "request payload is invalid",
+			want:       ErrorCodeInvalidRequest,
+		},
+		{
+			name:       "unauthenticated token",
+			serverCode: "16",
+			detail:     "unauthorized: invalid token",
+			want:       ErrorCodeInvalidEgressConfig,
+		},
+		{
+			name:       "egress unavailable",
+			serverCode: "14",
+			detail:     "failed to create egress connection",
+			want:       ErrorCodeEgressUnavailable,
+		},
+		{
+			name:       "unknown",
+			serverCode: "500",
+			detail:     "internal server error",
+			want:       ErrorCodeUnknown,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := classifyServerErrorCode(tt.serverCode, tt.detail)
+			if got != tt.want {
+				t.Fatalf("expected %q, got %q", tt.want, got)
+			}
+		})
 	}
 }
 

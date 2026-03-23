@@ -38,6 +38,7 @@ func TestSessionOptionOverrides(t *testing.T) {
 		WithExpireAt(expireAt),
 		WithSampleRate(24000),
 		WithBitrate(128),
+		WithAudioFormat(AudioFormatOggOpus),
 		WithTransportFrames(frameHandler),
 		WithOnError(errorHandler),
 		WithOnClose(closeHandler),
@@ -47,6 +48,7 @@ func TestSessionOptionOverrides(t *testing.T) {
 			URL:             "wss://livekit.example.com",
 			APIKey:          "api-key",
 			APISecret:       "api-secret",
+			APIToken:        "api-token",
 			RoomName:        "test-room",
 			PublisherID:     "publisher-123",
 			ExtraAttributes: map[string]string{"role": "avatar", "locale": "en-US"},
@@ -79,6 +81,9 @@ func TestSessionOptionOverrides(t *testing.T) {
 	if cfg.Bitrate != 128 {
 		t.Fatalf("expected Bitrate to be 128, got %d", cfg.Bitrate)
 	}
+	if cfg.AudioFormat != AudioFormatOggOpus {
+		t.Fatalf("expected AudioFormat to be %q, got %q", AudioFormatOggOpus, cfg.AudioFormat)
+	}
 	if cfg.ConsoleEndpointURL != "https://console.test" {
 		t.Fatalf("expected ConsoleEndpointURL to be set, got %q", cfg.ConsoleEndpointURL)
 	}
@@ -90,6 +95,9 @@ func TestSessionOptionOverrides(t *testing.T) {
 	}
 	if cfg.LiveKitEgress.URL != "wss://livekit.example.com" {
 		t.Fatalf("expected LiveKitEgress.URL to be set, got %q", cfg.LiveKitEgress.URL)
+	}
+	if cfg.LiveKitEgress.APIToken != "api-token" {
+		t.Fatalf("expected LiveKitEgress.APIToken to be set, got %q", cfg.LiveKitEgress.APIToken)
 	}
 	if cfg.LiveKitEgress.RoomName != "test-room" {
 		t.Fatalf("expected LiveKitEgress.RoomName to be set, got %q", cfg.LiveKitEgress.RoomName)
@@ -143,6 +151,9 @@ func TestSessionOptionDefaults(t *testing.T) {
 	}
 	if cfg.Bitrate != 0 {
 		t.Fatalf("expected default Bitrate to be 0, got %d", cfg.Bitrate)
+	}
+	if cfg.AudioFormat != AudioFormatPCMS16LE {
+		t.Fatalf("expected default AudioFormat to be %q, got %q", AudioFormatPCMS16LE, cfg.AudioFormat)
 	}
 	if cfg.UseQueryAuth {
 		t.Fatal("expected default UseQueryAuth to be false")
