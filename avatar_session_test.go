@@ -1,6 +1,7 @@
 package avatarsdkgo
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -1032,6 +1033,262 @@ func TestAvatarSessionSendAudioNoConnection(t *testing.T) {
 	_, err := session.SendAudio([]byte{0x01}, true)
 	if err == nil || !strings.Contains(err.Error(), "websocket connection is not established") {
 		t.Fatalf("expected websocket connection error, got %v", err)
+	}
+}
+
+func TestAvatarSessionSendAudioOggOpusPassthroughKeepsPreEncodedBytes(t *testing.T) {
+	upgrader := websocket.Upgrader{
+		CheckOrigin: func(r *http.Request) bool { return true },
+	}
+
+	serverConnCh := make(chan *websocket.Conn, 1)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Fatalf("failed to upgrade connection: %v", err)
+		}
+		serverConnCh <- conn
+	}))
+	defer server.Close()
+
+	wsURL := strings.Replace(server.URL, "http", "ws", 1)
+	clientConn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("failed to dial websocket server: %v", err)
+	}
+	defer clientConn.Close() // nolint:errcheck
+
+	session := NewAvatarSession(WithAudioFormat(AudioFormatOggOpus))
+	session.conn = clientConn
+	defer func() {
+		if err := session.Close(); err != nil {
+			t.Fatalf("failed to close session: %v", err)
+		}
+	}()
+
+	serverConn := <-serverConnCh
+	defer serverConn.Close() // nolint:errcheck
+
+	received := make(chan *message.ClientAudioInput, 1)
+	go func() {
+		messageType, payload, err := serverConn.ReadMessage()
+		if err != nil || messageType != websocket.BinaryMessage {
+			return
+		}
+
+		var envelope message.Message
+		if err := proto.Unmarshal(payload, &envelope); err != nil {
+			return
+		}
+
+		received <- envelope.GetClientAudioInput()
+	}()
+
+	preEncoded := []byte("OggS-pre-encoded")
+	reqID, err := session.SendAudio(preEncoded, true)
+	if err != nil {
+		t.Fatalf("SendAudio returned error: %v", err)
+	}
+
+	select {
+	case input := <-received:
+		if input == nil {
+			t.Fatal("expected client audio input payload")
+		}
+		if input.GetReqId() != reqID {
+			t.Fatalf("expected req id %q, got %q", reqID, input.GetReqId())
+		}
+		if !bytes.Equal(input.GetAudio(), preEncoded) {
+			t.Fatal("expected pre-encoded bytes to pass through unchanged")
+		}
+		if !input.GetEnd() {
+			t.Fatal("expected end=true")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for audio payload")
+	}
+}
+
+func TestAvatarSessionSendAudioInternalEncoderOutputsOggOpusAndCallback(t *testing.T) {
+	upgrader := websocket.Upgrader{
+		CheckOrigin: func(r *http.Request) bool { return true },
+	}
+
+	serverConnCh := make(chan *websocket.Conn, 1)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Fatalf("failed to upgrade connection: %v", err)
+		}
+		serverConnCh <- conn
+	}))
+	defer server.Close()
+
+	wsURL := strings.Replace(server.URL, "http", "ws", 1)
+	clientConn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("failed to dial websocket server: %v", err)
+	}
+	defer clientConn.Close() // nolint:errcheck
+
+	var callbackReqID string
+	var callbackPayload []byte
+	session := NewAvatarSession(
+		WithAudioFormat(AudioFormatOggOpus),
+		WithSampleRate(24000),
+		WithBitrate(32000),
+		WithOggOpusEncoder(nil),
+		WithOnEncodedAudio(func(reqID string, payload []byte) {
+			callbackReqID = reqID
+			callbackPayload = append([]byte(nil), payload...)
+		}),
+	)
+	session.conn = clientConn
+	defer func() {
+		if err := session.Close(); err != nil {
+			t.Fatalf("failed to close session: %v", err)
+		}
+	}()
+
+	serverConn := <-serverConnCh
+	defer serverConn.Close() // nolint:errcheck
+
+	received := make(chan *message.ClientAudioInput, 1)
+	go func() {
+		messageType, payload, err := serverConn.ReadMessage()
+		if err != nil || messageType != websocket.BinaryMessage {
+			return
+		}
+
+		var envelope message.Message
+		if err := proto.Unmarshal(payload, &envelope); err != nil {
+			return
+		}
+
+		received <- envelope.GetClientAudioInput()
+	}()
+
+	reqID, err := session.SendAudio(bytes.Repeat([]byte{0x00, 0x00}, 480), true)
+	if err != nil {
+		t.Fatalf("SendAudio returned error: %v", err)
+	}
+
+	select {
+	case input := <-received:
+		if input == nil {
+			t.Fatal("expected client audio input payload")
+		}
+		if input.GetReqId() != reqID {
+			t.Fatalf("expected req id %q, got %q", reqID, input.GetReqId())
+		}
+		if !bytes.HasPrefix(input.GetAudio(), []byte("OggS")) {
+			t.Fatalf("expected OggS prefix, got %q", input.GetAudio()[:min(4, len(input.GetAudio()))])
+		}
+		if !input.GetEnd() {
+			t.Fatal("expected end=true")
+		}
+		if callbackReqID != reqID {
+			t.Fatalf("expected callback req id %q, got %q", reqID, callbackReqID)
+		}
+		if !bytes.Equal(callbackPayload, input.GetAudio()) {
+			t.Fatal("expected callback payload to match encoded payload")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for encoded audio payload")
+	}
+}
+
+func TestAvatarSessionSendAudioInternalEncoderBuffersUntilFrameReady(t *testing.T) {
+	upgrader := websocket.Upgrader{
+		CheckOrigin: func(r *http.Request) bool { return true },
+	}
+
+	serverConnCh := make(chan *websocket.Conn, 1)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Fatalf("failed to upgrade connection: %v", err)
+		}
+		serverConnCh <- conn
+	}))
+	defer server.Close()
+
+	wsURL := strings.Replace(server.URL, "http", "ws", 1)
+	clientConn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("failed to dial websocket server: %v", err)
+	}
+	defer clientConn.Close() // nolint:errcheck
+
+	session := NewAvatarSession(
+		WithAudioFormat(AudioFormatOggOpus),
+		WithSampleRate(24000),
+		WithOggOpusEncoder(nil),
+	)
+	session.conn = clientConn
+	defer func() {
+		if err := session.Close(); err != nil {
+			t.Fatalf("failed to close session: %v", err)
+		}
+	}()
+
+	serverConn := <-serverConnCh
+	defer serverConn.Close() // nolint:errcheck
+
+	received := make(chan *message.ClientAudioInput, 2)
+	go func() {
+		for {
+			messageType, payload, err := serverConn.ReadMessage()
+			if err != nil {
+				return
+			}
+			if messageType != websocket.BinaryMessage {
+				continue
+			}
+
+			var envelope message.Message
+			if err := proto.Unmarshal(payload, &envelope); err != nil {
+				return
+			}
+
+			input := envelope.GetClientAudioInput()
+			if input != nil {
+				received <- input
+			}
+		}
+	}()
+
+	reqID, err := session.SendAudio(bytes.Repeat([]byte{0x00, 0x00}, 100), false)
+	if err != nil {
+		t.Fatalf("SendAudio returned error for first chunk: %v", err)
+	}
+
+	select {
+	case <-received:
+		t.Fatal("expected no websocket payload before a full frame is ready")
+	case <-time.After(250 * time.Millisecond):
+	}
+
+	if _, err := session.SendAudio(bytes.Repeat([]byte{0x00, 0x00}, 380), true); err != nil {
+		t.Fatalf("SendAudio returned error for second chunk: %v", err)
+	}
+
+	select {
+	case input := <-received:
+		if input.GetReqId() != reqID {
+			t.Fatalf("expected req id %q, got %q", reqID, input.GetReqId())
+		}
+		if !bytes.HasPrefix(input.GetAudio(), []byte("OggS")) {
+			t.Fatalf("expected OggS prefix, got %q", input.GetAudio()[:min(4, len(input.GetAudio()))])
+		}
+		if !input.GetEnd() {
+			t.Fatal("expected end=true")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for encoded audio payload")
 	}
 }
 
