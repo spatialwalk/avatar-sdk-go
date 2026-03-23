@@ -3,6 +3,7 @@ package avatarsdkgo
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -621,8 +622,7 @@ func TestAvatarSessionStartWithLiveKitEgress(t *testing.T) {
 		WithAppID("app-123"),
 		WithLiveKitEgress(&LiveKitEgressConfig{
 			URL:             "wss://livekit.example.com",
-			APIKey:          "lk-api-key",
-			APISecret:       "lk-api-secret",
+			APIToken:        "lk-token",
 			RoomName:        "test-room",
 			PublisherID:     "publisher-123",
 			ExtraAttributes: map[string]string{"role": "avatar", "region": "us-west"},
@@ -646,6 +646,9 @@ func TestAvatarSessionStartWithLiveKitEgress(t *testing.T) {
 	if receivedEgressConfig.GetUrl() != "wss://livekit.example.com" {
 		t.Fatalf("expected livekit_egress.url to be 'wss://livekit.example.com', got %q", receivedEgressConfig.GetUrl())
 	}
+	if receivedEgressConfig.GetApiToken() != "lk-token" {
+		t.Fatalf("expected livekit_egress.api_token to be 'lk-token', got %q", receivedEgressConfig.GetApiToken())
+	}
 	if receivedEgressConfig.GetRoomName() != "test-room" {
 		t.Fatalf("expected livekit_egress.room_name to be 'test-room', got %q", receivedEgressConfig.GetRoomName())
 	}
@@ -663,6 +666,78 @@ func TestAvatarSessionStartWithLiveKitEgress(t *testing.T) {
 	}
 	if connectionID != "conn-id-egress" {
 		t.Fatalf("expected connection ID, got %q", connectionID)
+	}
+
+	_ = session.Close()
+}
+
+func TestAvatarSessionStartWithOggOpusAudioFormat(t *testing.T) {
+	upgrader := websocket.Upgrader{
+		CheckOrigin: func(r *http.Request) bool { return true },
+	}
+
+	var receivedAudioFormat message.AudioFormat
+	var serverConn *websocket.Conn
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		serverConn = conn
+
+		go func() {
+			messageType, payload, err := conn.ReadMessage()
+			if err != nil || messageType != websocket.BinaryMessage {
+				return
+			}
+
+			var envelope message.Message
+			if err := proto.Unmarshal(payload, &envelope); err != nil {
+				return
+			}
+
+			clientConfig := envelope.GetClientConfigureSession()
+			if clientConfig != nil {
+				receivedAudioFormat = clientConfig.GetAudioFormat()
+			}
+
+			confirmMsg := &message.Message{
+				Type: message.MessageType_MESSAGE_SERVER_CONFIRM_SESSION,
+				Data: &message.Message_ServerConfirmSession{
+					ServerConfirmSession: &message.ServerConfirmSession{
+						ConnectionId: "conn-id-ogg",
+					},
+				},
+			}
+			confirmData, _ := proto.Marshal(confirmMsg)
+			_ = conn.WriteMessage(websocket.BinaryMessage, confirmData)
+		}()
+	}))
+	defer server.Close()
+	defer func() {
+		if serverConn != nil {
+			_ = serverConn.Close()
+		}
+	}()
+
+	session := NewAvatarSession(
+		WithAvatarID("avatar-123"),
+		WithAppID("app-123"),
+		WithAudioFormat(AudioFormatOggOpus),
+		WithIngressEndpointURL(strings.Replace(server.URL, "http", "ws", 1)),
+	)
+	session.sessionToken = "session-token-123"
+
+	connectionID, err := session.Start(context.Background())
+	if err != nil {
+		t.Fatalf("Start returned error: %v", err)
+	}
+	if connectionID != "conn-id-ogg" {
+		t.Fatalf("expected connection ID, got %q", connectionID)
+	}
+	if receivedAudioFormat != message.AudioFormat_AUDIO_FORMAT_OGG_OPUS {
+		t.Fatalf("expected audio_format to be AUDIO_FORMAT_OGG_OPUS, got %v", receivedAudioFormat)
 	}
 
 	_ = session.Close()
@@ -711,11 +786,71 @@ func TestAvatarSessionStartHandshakeServerError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error from ServerError response")
 	}
-	if !strings.Contains(err.Error(), "ServerError during handshake") {
-		t.Fatalf("expected ServerError during handshake, got %v", err)
+	var sdkErr *AvatarSDKError
+	if !errors.As(err, &sdkErr) {
+		t.Fatalf("expected AvatarSDKError, got %T", err)
 	}
-	if !strings.Contains(err.Error(), "invalid configuration") {
-		t.Fatalf("expected error message, got %v", err)
+	if sdkErr.Code != ErrorCodeInvalidRequest {
+		t.Fatalf("expected invalidRequest code, got %q", sdkErr.Code)
+	}
+	if sdkErr.ServerCode != "400" {
+		t.Fatalf("expected server code 400, got %q", sdkErr.ServerCode)
+	}
+	if sdkErr.Message != "invalid configuration" {
+		t.Fatalf("expected error message, got %q", sdkErr.Message)
+	}
+}
+
+func TestAvatarSessionStartHandshakeUnauthenticatedEgressError(t *testing.T) {
+	upgrader := websocket.Upgrader{
+		CheckOrigin: func(r *http.Request) bool { return true },
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+
+		_, _, _ = conn.ReadMessage()
+
+		errMsg := &message.Message{
+			Type: message.MessageType_MESSAGE_SERVER_ERROR,
+			Data: &message.Message_ServerError{
+				ServerError: &message.ServerError{
+					ConnectionId: "conn-123",
+					ReqId:        "req-456",
+					Code:         16,
+					Message:      "failed to create connection: failed to connect to room: unauthorized: invalid token",
+				},
+			},
+		}
+		errData, _ := proto.Marshal(errMsg)
+		_ = conn.WriteMessage(websocket.BinaryMessage, errData)
+	}))
+	defer server.Close()
+
+	session := NewAvatarSession(
+		WithAvatarID("avatar-123"),
+		WithAppID("app-123"),
+		WithIngressEndpointURL(strings.Replace(server.URL, "http", "ws", 1)),
+	)
+	session.sessionToken = "token"
+
+	_, err := session.Start(context.Background())
+	if err == nil {
+		t.Fatal("expected error from ServerError response")
+	}
+	var sdkErr *AvatarSDKError
+	if !errors.As(err, &sdkErr) {
+		t.Fatalf("expected AvatarSDKError, got %T", err)
+	}
+	if sdkErr.Code != ErrorCodeInvalidEgressConfig {
+		t.Fatalf("expected invalidEgressConfig code, got %q", sdkErr.Code)
+	}
+	if sdkErr.ServerCode != "16" {
+		t.Fatalf("expected server code 16, got %q", sdkErr.ServerCode)
 	}
 }
 
@@ -985,8 +1120,15 @@ func TestReadLoopServerError(t *testing.T) {
 
 	select {
 	case err := <-errorReceived:
-		if !strings.Contains(err.Error(), "internal server error") {
-			t.Fatalf("expected error to contain message, got %v", err)
+		var sdkErr *AvatarSDKError
+		if !errors.As(err, &sdkErr) {
+			t.Fatalf("expected AvatarSDKError, got %T", err)
+		}
+		if sdkErr.Code != ErrorCodeUnknown {
+			t.Fatalf("expected unknown code, got %q", sdkErr.Code)
+		}
+		if sdkErr.Message != "internal server error" {
+			t.Fatalf("expected error message to contain server detail, got %q", sdkErr.Message)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for error callback")
@@ -994,6 +1136,89 @@ func TestReadLoopServerError(t *testing.T) {
 
 	// Wait for server to close connection
 	<-serverDone
+}
+
+func TestReadLoopServerErrorMapsInvalidEgressConfig(t *testing.T) {
+	upgrader := websocket.Upgrader{
+		CheckOrigin: func(r *http.Request) bool { return true },
+	}
+
+	errorReceived := make(chan error, 1)
+	handshakeComplete := make(chan struct{})
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+
+		_, _, _ = conn.ReadMessage()
+
+		confirmMsg := &message.Message{
+			Type: message.MessageType_MESSAGE_SERVER_CONFIRM_SESSION,
+			Data: &message.Message_ServerConfirmSession{
+				ServerConfirmSession: &message.ServerConfirmSession{
+					ConnectionId: "conn-123",
+				},
+			},
+		}
+		confirmData, _ := proto.Marshal(confirmMsg)
+		_ = conn.WriteMessage(websocket.BinaryMessage, confirmData)
+
+		<-handshakeComplete
+
+		errMsg := &message.Message{
+			Type: message.MessageType_MESSAGE_SERVER_ERROR,
+			Data: &message.Message_ServerError{
+				ServerError: &message.ServerError{
+					ConnectionId: "conn-123",
+					ReqId:        "req-456",
+					Code:         16,
+					Message:      "failed to create connection: failed to connect to room: unauthorized: invalid token",
+				},
+			},
+		}
+		errData, _ := proto.Marshal(errMsg)
+		_ = conn.WriteMessage(websocket.BinaryMessage, errData)
+		_ = conn.Close()
+	}))
+	defer server.Close()
+
+	session := NewAvatarSession(
+		WithAvatarID("avatar-123"),
+		WithAppID("app-123"),
+		WithIngressEndpointURL(strings.Replace(server.URL, "http", "ws", 1)),
+		WithOnError(func(err error) {
+			select {
+			case errorReceived <- err:
+			default:
+			}
+		}),
+	)
+	session.sessionToken = "token"
+
+	_, err := session.Start(context.Background())
+	if err != nil {
+		t.Fatalf("Start returned error: %v", err)
+	}
+
+	close(handshakeComplete)
+
+	select {
+	case err := <-errorReceived:
+		var sdkErr *AvatarSDKError
+		if !errors.As(err, &sdkErr) {
+			t.Fatalf("expected AvatarSDKError, got %T", err)
+		}
+		if sdkErr.Code != ErrorCodeInvalidEgressConfig {
+			t.Fatalf("expected invalidEgressConfig, got %q", sdkErr.Code)
+		}
+		if sdkErr.ServerCode != "16" {
+			t.Fatalf("expected server code 16, got %q", sdkErr.ServerCode)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for error callback")
+	}
 }
 
 func TestReadLoopAnimationFrame(t *testing.T) {

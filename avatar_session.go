@@ -233,7 +233,7 @@ func (s *AvatarSession) sendClientConfigureSession() error {
 	clientConfig := &message.ClientConfigureSession{
 		SampleRate:           int32(s.config.SampleRate),
 		Bitrate:              int32(s.config.Bitrate),
-		AudioFormat:          message.AudioFormat_AUDIO_FORMAT_PCM_S16LE,
+		AudioFormat:          protoAudioFormat(s.config.AudioFormat),
 		TransportCompression: message.TransportCompression_TRANSPORT_COMPRESSION_NONE,
 	}
 
@@ -244,6 +244,7 @@ func (s *AvatarSession) sendClientConfigureSession() error {
 			Url:             s.config.LiveKitEgress.URL,
 			ApiKey:          s.config.LiveKitEgress.APIKey,
 			ApiSecret:       s.config.LiveKitEgress.APISecret,
+			ApiToken:        s.config.LiveKitEgress.APIToken,
 			RoomName:        s.config.LiveKitEgress.RoomName,
 			PublisherId:     s.config.LiveKitEgress.PublisherID,
 			ExtraAttributes: s.config.LiveKitEgress.ExtraAttributes,
@@ -301,29 +302,43 @@ func (s *AvatarSession) awaitServerConfirmSession(ctx context.Context) (string, 
 	}
 
 	if messageType != websocket.BinaryMessage {
-		return "", errors.New("start avatar session: failed during websocket handshake: expected binary protobuf message")
+		return "", NewAvatarSDKError(
+			ErrorCodeProtocolError,
+			"failed during websocket handshake: expected binary protobuf message",
+		)
 	}
 
 	var envelope message.Message
 	if err := proto.Unmarshal(payload, &envelope); err != nil {
-		return "", fmt.Errorf("start avatar session: failed during websocket handshake: invalid protobuf payload: %w", err)
+		return "", NewAvatarSDKError(
+			ErrorCodeProtocolError,
+			fmt.Sprintf("failed during websocket handshake: invalid protobuf payload: %v", err),
+		)
 	}
 
 	switch envelope.GetType() {
 	case message.MessageType_MESSAGE_SERVER_CONFIRM_SESSION:
 		confirm := envelope.GetServerConfirmSession()
 		if confirm == nil || confirm.GetConnectionId() == "" {
-			return "", errors.New("start avatar session: handshake succeeded but server_confirm_session.connection_id is empty")
+			return "", NewAvatarSDKError(
+				ErrorCodeProtocolError,
+				"handshake succeeded but server_confirm_session.connection_id is empty",
+			)
 		}
 		return confirm.GetConnectionId(), nil
 
 	case message.MessageType_MESSAGE_SERVER_ERROR:
 		serverErr := envelope.GetServerError()
 		if serverErr == nil {
-			return "", errors.New("start avatar session: ServerError during handshake (missing payload)")
+			return "", NewAvatarSDKError(ErrorCodeProtocolError, "server error during handshake: missing payload")
 		}
-		return "", fmt.Errorf("start avatar session: ServerError during handshake (connection_id=%s, req_id=%s, code=%d): %s",
-			serverErr.GetConnectionId(), serverErr.GetReqId(), serverErr.GetCode(), serverErr.GetMessage())
+		return "", newServerAvatarSDKError(
+			"websocket_handshake",
+			serverErr.GetCode(),
+			serverErr.GetMessage(),
+			serverErr.GetConnectionId(),
+			serverErr.GetReqId(),
+		)
 
 	default:
 		return "", fmt.Errorf("start avatar session: unexpected message during handshake: type=%v", envelope.GetType())
@@ -530,10 +545,26 @@ func (s *AvatarSession) readLoop(ctx context.Context) {
 					go cfg.OnError(errors.New("avatar session read loop: error message missing payload"))
 					continue
 				}
-				report := fmt.Errorf("avatar session error (connection_id=%s, req_id=%s, code=%d): %s",
-					serverErr.GetConnectionId(), serverErr.GetReqId(), serverErr.GetCode(), serverErr.GetMessage())
+				report := newServerAvatarSDKError(
+					"runtime",
+					serverErr.GetCode(),
+					serverErr.GetMessage(),
+					serverErr.GetConnectionId(),
+					serverErr.GetReqId(),
+				)
 				go cfg.OnError(report)
 			}
 		}
+	}
+}
+
+func protoAudioFormat(audioFormat AudioFormat) message.AudioFormat {
+	switch audioFormat {
+	case AudioFormatOggOpus:
+		return message.AudioFormat_AUDIO_FORMAT_OGG_OPUS
+	case "", AudioFormatPCMS16LE:
+		return message.AudioFormat_AUDIO_FORMAT_PCM_S16LE
+	default:
+		return message.AudioFormat_AUDIO_FORMAT_PCM_S16LE
 	}
 }

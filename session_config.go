@@ -2,6 +2,16 @@ package avatarsdkgo
 
 import "time"
 
+// AudioFormat identifies the audio encoding negotiated for a session.
+type AudioFormat string
+
+const (
+	// AudioFormatPCMS16LE sends mono 16-bit PCM bytes.
+	AudioFormatPCMS16LE AudioFormat = "pcm_s16le"
+	// AudioFormatOggOpus sends one continuous Ogg Opus stream per request ID.
+	AudioFormatOggOpus AudioFormat = "ogg_opus"
+)
+
 // SessionConfig captures the configuration used to build an AvatarSession.
 type SessionConfig struct {
 	AvatarID           string
@@ -11,6 +21,7 @@ type SessionConfig struct {
 	ExpireAt           time.Time
 	SampleRate         int
 	Bitrate            int
+	AudioFormat        AudioFormat
 	TransportFrames    func([]byte, bool)
 	OnError            func(error)
 	OnClose            func()
@@ -24,10 +35,12 @@ type SessionConfig struct {
 type LiveKitEgressConfig struct {
 	// URL is the LiveKit server URL (e.g., wss://livekit.example.com)
 	URL string
-	// APIKey is the LiveKit API key
+	// APIKey is the deprecated LiveKit API key.
 	APIKey string
-	// APISecret is the LiveKit API secret
+	// APISecret is the deprecated LiveKit API secret.
 	APISecret string
+	// APIToken is the preferred pre-generated LiveKit access token.
+	APIToken string
 	// RoomName is the LiveKit room name to join
 	RoomName string
 	// PublisherID is the publisher identity in the room
@@ -60,6 +73,7 @@ func defaultSessionConfig() *SessionConfig {
 		OnClose:         func() {},
 		SampleRate:      16000,
 		Bitrate:         0,
+		AudioFormat:     AudioFormatPCMS16LE,
 	}
 }
 
@@ -109,6 +123,13 @@ func WithSampleRate(sampleRate int) SessionOption {
 func WithBitrate(bitrate int) SessionOption {
 	return func(cfg *SessionConfig) {
 		cfg.Bitrate = bitrate
+	}
+}
+
+// WithAudioFormat sets the negotiated audio input format.
+func WithAudioFormat(audioFormat AudioFormat) SessionOption {
+	return func(cfg *SessionConfig) {
+		cfg.AudioFormat = audioFormat
 	}
 }
 
