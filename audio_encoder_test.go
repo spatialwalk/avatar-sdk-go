@@ -101,10 +101,3 @@ func TestOggOpusStreamEncoderRejectsOddPCMInput(t *testing.T) {
 		t.Fatalf("expected alignment error, got %v", err)
 	}
 }
-
-func min(a int, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}

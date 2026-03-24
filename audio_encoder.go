@@ -33,6 +33,22 @@ var (
 		40: {},
 		60: {},
 	}
+	oggCRCTable = func() [256]uint32 {
+		var table [256]uint32
+		for i := range table {
+			crc := uint32(i) << 24
+			for bit := 0; bit < 8; bit++ {
+				if crc&0x80000000 != 0 {
+					crc = (crc << 1) ^ oggOpusCRCPoly
+				} else {
+					crc <<= 1
+				}
+			}
+			table[i] = crc
+		}
+
+		return table
+	}()
 )
 
 // EncodedAudioChunk contains a newly encoded payload and the final stream bytes, when requested.
@@ -227,12 +243,11 @@ func (e *OggOpusStreamEncoder) buildOggPage(packet []byte, granulePosition uint6
 	header = append(header, byte(len(lacingValues)))
 	header = append(header, lacingValues...)
 
-	page := append(append([]byte(nil), header...), packet...)
-	checksum := oggCRC(page)
-	binary.LittleEndian.PutUint32(header[22:26], checksum)
+	page := append(header, packet...)
+	binary.LittleEndian.PutUint32(page[22:26], oggCRC(page))
 	e.pageSequence++
 
-	return append(header, packet...)
+	return page
 }
 
 func (e *OggOpusStreamEncoder) buildOpusHead() []byte {
@@ -355,14 +370,7 @@ func opusApplication(application OggOpusApplication) (opus.Application, error) {
 func oggCRC(data []byte) uint32 {
 	var crc uint32
 	for _, b := range data {
-		crc ^= uint32(b) << 24
-		for i := 0; i < 8; i++ {
-			if crc&0x80000000 != 0 {
-				crc = (crc << 1) ^ oggOpusCRCPoly
-			} else {
-				crc <<= 1
-			}
-		}
+		crc = (crc << 8) ^ oggCRCTable[byte(crc>>24)^b]
 	}
 
 	return crc
