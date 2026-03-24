@@ -12,6 +12,24 @@ const (
 	AudioFormatOggOpus AudioFormat = "ogg_opus"
 )
 
+// OggOpusApplication identifies the Opus encoder tuning profile.
+type OggOpusApplication string
+
+const (
+	// OggOpusApplicationAudio optimizes encoding for non-voice signals like music.
+	OggOpusApplicationAudio OggOpusApplication = "audio"
+	// OggOpusApplicationVoIP optimizes encoding for speech.
+	OggOpusApplicationVoIP OggOpusApplication = "voip"
+	// OggOpusApplicationRestrictedLowdelay optimizes encoding for low-latency use cases.
+	OggOpusApplicationRestrictedLowdelay OggOpusApplication = "restricted_lowdelay"
+)
+
+// OggOpusEncoderConfig configures the optional client-side PCM to Ogg Opus encoder.
+type OggOpusEncoderConfig struct {
+	FrameDurationMS int
+	Application     OggOpusApplication
+}
+
 // SessionConfig captures the configuration used to build an AvatarSession.
 type SessionConfig struct {
 	AvatarID           string
@@ -22,6 +40,8 @@ type SessionConfig struct {
 	SampleRate         int
 	Bitrate            int
 	AudioFormat        AudioFormat
+	OggOpusEncoder     *OggOpusEncoderConfig
+	OnEncodedAudio     func(string, []byte)
 	TransportFrames    func([]byte, bool)
 	OnError            func(error)
 	OnClose            func()
@@ -130,6 +150,27 @@ func WithBitrate(bitrate int) SessionOption {
 func WithAudioFormat(audioFormat AudioFormat) SessionOption {
 	return func(cfg *SessionConfig) {
 		cfg.AudioFormat = audioFormat
+	}
+}
+
+// WithOggOpusEncoder enables client-side PCM to Ogg Opus encoding for OGG_OPUS sessions.
+func WithOggOpusEncoder(config *OggOpusEncoderConfig) SessionOption {
+	return func(cfg *SessionConfig) {
+		if config == nil {
+			cfg.OggOpusEncoder = &OggOpusEncoderConfig{
+				FrameDurationMS: 20,
+				Application:     OggOpusApplicationAudio,
+			}
+			return
+		}
+		cfg.OggOpusEncoder = config
+	}
+}
+
+// WithOnEncodedAudio registers a handler invoked when internal Ogg Opus encoding completes.
+func WithOnEncodedAudio(handler func(string, []byte)) SessionOption {
+	return func(cfg *SessionConfig) {
+		cfg.OnEncodedAudio = handler
 	}
 }
 

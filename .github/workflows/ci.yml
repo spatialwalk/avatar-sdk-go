@@ -21,6 +21,11 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      - name: Install Opus dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libopus-dev libopusfile-dev
+
       - name: Run unit tests with coverage
         run: go test ./... -covermode=atomic -coverprofile=coverage.out
 

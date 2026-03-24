@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"strings"
@@ -30,6 +31,7 @@ type AvatarSession struct {
 	currentReqID string
 	lastReqID    string // tracks the most recent request ID for interrupt
 	connectionID string
+	audioEncoder *OggOpusStreamEncoder
 }
 
 // NewAvatarSession creates a new AvatarSession using the provided SessionOptions.
@@ -346,7 +348,7 @@ func (s *AvatarSession) awaitServerConfirmSession(ctx context.Context) (string, 
 }
 
 // SendAudio sends audio data to the server.
-// Currently supports 16kHz mono 16-bit PCM audio by default.
+// Audio must match the session's negotiated format unless the internal Ogg Opus encoder is enabled.
 func (s *AvatarSession) SendAudio(audio []byte, end bool) (string, error) {
 	if s.conn == nil {
 		return "", errors.New("send audio: websocket connection is not established")
@@ -362,13 +364,35 @@ func (s *AvatarSession) SendAudio(audio []byte, end bool) (string, error) {
 	}
 
 	reqID := s.currentReqID
+	payload := audio
+	var encodedStream []byte
+
+	useInternalEncoder := s.usesInternalOggOpusEncoder()
+	if useInternalEncoder {
+		encoder, err := s.getOrCreateAudioEncoder()
+		if err != nil {
+			return "", fmt.Errorf("send audio: %w", err)
+		}
+
+		encodedChunk, err := encoder.Encode(audio, end)
+		if err != nil {
+			return "", fmt.Errorf("send audio: %w", err)
+		}
+
+		payload = encodedChunk.Payload
+		encodedStream = encodedChunk.CompletedStream
+	}
+
+	if useInternalEncoder && len(payload) == 0 && !end {
+		return reqID, nil
+	}
 
 	msg := &message.Message{
 		Type: message.MessageType_MESSAGE_CLIENT_AUDIO_INPUT,
 		Data: &message.Message_ClientAudioInput{
 			ClientAudioInput: &message.ClientAudioInput{
 				ReqId: reqID,
-				Audio: audio,
+				Audio: payload,
 				End:   end,
 			},
 		},
@@ -383,8 +407,13 @@ func (s *AvatarSession) SendAudio(audio []byte, end bool) (string, error) {
 		return "", fmt.Errorf("send audio: write message: %w", err)
 	}
 
+	if len(encodedStream) > 0 {
+		s.notifyEncodedAudio(reqID, encodedStream)
+	}
+
 	if end {
 		s.currentReqID = ""
+		s.audioEncoder = nil
 	}
 
 	return reqID, nil
@@ -567,4 +596,44 @@ func protoAudioFormat(audioFormat AudioFormat) message.AudioFormat {
 	default:
 		return message.AudioFormat_AUDIO_FORMAT_PCM_S16LE
 	}
+}
+
+func (s *AvatarSession) usesInternalOggOpusEncoder() bool {
+	return s != nil &&
+		s.config != nil &&
+		s.config.AudioFormat == AudioFormatOggOpus &&
+		s.config.OggOpusEncoder != nil
+}
+
+func (s *AvatarSession) getOrCreateAudioEncoder() (*OggOpusStreamEncoder, error) {
+	if s.audioEncoder != nil {
+		return s.audioEncoder, nil
+	}
+
+	encoder, err := NewOggOpusStreamEncoder(
+		s.config.SampleRate,
+		s.config.Bitrate,
+		s.config.OggOpusEncoder,
+		s.config.OnEncodedAudio != nil,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	s.audioEncoder = encoder
+	return s.audioEncoder, nil
+}
+
+func (s *AvatarSession) notifyEncodedAudio(reqID string, encodedAudio []byte) {
+	if s == nil || s.config == nil || s.config.OnEncodedAudio == nil {
+		return
+	}
+
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			log.Printf("avatarsdkgo: on encoded audio callback panicked: %v", recovered)
+		}
+	}()
+
+	s.config.OnEncodedAudio(reqID, encodedAudio)
 }

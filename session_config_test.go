@@ -13,6 +13,7 @@ func TestSessionOptionOverrides(t *testing.T) {
 	var framesCalled bool
 	var onErrorCalled bool
 	var onCloseCalled bool
+	var encodedAudioCalled bool
 
 	frameHandler := func(data []byte, end bool) {
 		framesCalled = true
@@ -29,6 +30,9 @@ func TestSessionOptionOverrides(t *testing.T) {
 	closeHandler := func() {
 		onCloseCalled = true
 	}
+	encodedAudioHandler := func(reqID string, payload []byte) {
+		encodedAudioCalled = reqID == "req-123" && string(payload) == "encoded"
+	}
 
 	opts := []SessionOption{
 		WithAvatarID("avatar-123"),
@@ -39,6 +43,11 @@ func TestSessionOptionOverrides(t *testing.T) {
 		WithSampleRate(24000),
 		WithBitrate(128),
 		WithAudioFormat(AudioFormatOggOpus),
+		WithOggOpusEncoder(&OggOpusEncoderConfig{
+			FrameDurationMS: 40,
+			Application:     OggOpusApplicationVoIP,
+		}),
+		WithOnEncodedAudio(encodedAudioHandler),
 		WithTransportFrames(frameHandler),
 		WithOnError(errorHandler),
 		WithOnClose(closeHandler),
@@ -83,6 +92,15 @@ func TestSessionOptionOverrides(t *testing.T) {
 	}
 	if cfg.AudioFormat != AudioFormatOggOpus {
 		t.Fatalf("expected AudioFormat to be %q, got %q", AudioFormatOggOpus, cfg.AudioFormat)
+	}
+	if cfg.OggOpusEncoder == nil {
+		t.Fatal("expected OggOpusEncoder to be set")
+	}
+	if cfg.OggOpusEncoder.FrameDurationMS != 40 {
+		t.Fatalf("expected FrameDurationMS to be 40, got %d", cfg.OggOpusEncoder.FrameDurationMS)
+	}
+	if cfg.OggOpusEncoder.Application != OggOpusApplicationVoIP {
+		t.Fatalf("expected Application to be %q, got %q", OggOpusApplicationVoIP, cfg.OggOpusEncoder.Application)
 	}
 	if cfg.ConsoleEndpointURL != "https://console.test" {
 		t.Fatalf("expected ConsoleEndpointURL to be set, got %q", cfg.ConsoleEndpointURL)
@@ -132,6 +150,14 @@ func TestSessionOptionOverrides(t *testing.T) {
 	if !onCloseCalled {
 		t.Fatal("OnClose handler was not invoked")
 	}
+
+	if cfg.OnEncodedAudio == nil {
+		t.Fatal("OnEncodedAudio handler should not be nil")
+	}
+	cfg.OnEncodedAudio("req-123", []byte("encoded"))
+	if !encodedAudioCalled {
+		t.Fatal("OnEncodedAudio handler was not invoked")
+	}
 }
 
 func TestSessionOptionDefaults(t *testing.T) {
@@ -154,6 +180,12 @@ func TestSessionOptionDefaults(t *testing.T) {
 	}
 	if cfg.AudioFormat != AudioFormatPCMS16LE {
 		t.Fatalf("expected default AudioFormat to be %q, got %q", AudioFormatPCMS16LE, cfg.AudioFormat)
+	}
+	if cfg.OggOpusEncoder != nil {
+		t.Fatal("expected default OggOpusEncoder to be nil")
+	}
+	if cfg.OnEncodedAudio != nil {
+		t.Fatal("expected default OnEncodedAudio to be nil")
 	}
 	if cfg.UseQueryAuth {
 		t.Fatal("expected default UseQueryAuth to be false")
